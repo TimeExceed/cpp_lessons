@@ -1,0 +1,1275 @@
+\documentclass[UTF8,lualatex]{ctexbeamer}
+\usepackage{tabu}
+\usepackage{amsmath}
+\usepackage{graphicx}
+\usepackage{minted}
+
+\usetheme{Frankfurt}
+\setbeamertemplate{note page}[plain]
+% $BEAMER_NOTES
+
+\title{\kaishu Modern C++ and Beyond\\
+    第一课：编译、链接与构建系统}
+    \author{陶大}
+    \date{2022年7月}
+
+\newminted{cpp}{autogobble}
+\newminted{bash}{autogobble}
+\newminted{console}{autogobble}
+
+\begin{document}
+\songti
+
+\begin{frame}[plain]
+    \titlepage
+\end{frame}
+
+\begin{frame}[plain]
+    \begin{center}
+        \includegraphics[height=.8\textheight]{pics/kungfu_category.jpg}
+    \end{center}
+\end{frame}
+
+\begin{frame}[plain]
+    \tableofcontents
+\end{frame}
+
+\begin{frame}
+    \frametitle{}
+    \begin{block}{若干疑惑}
+        \begin{itemize}
+            \item 编译个程序为什么那么复杂？
+                Make, SCons, Bazel, CMake都是什么鬼？
+            \item 当我运行一个程序，发生了什么？
+            \item 为什么头文件里实现函数，需要加inline？
+            \item \mintinline{C++}{extern "C"} 是做什么的？
+                被它修饰的函数可以调用C++库吗？
+            \item 动态库和静态库什么区别？
+                为什么用静态库跑得好好的程序，换成动态库就崩了？
+        \end{itemize}
+    \end{block}
+\end{frame}
+
+\section{构建系统}
+
+\begin{frame}[fragile=singleslide]
+    \frametitle{C/C++的编译：简图}
+    \begin{center}
+        \includegraphics[width=\textwidth]{pics/build-brief.png}
+    \end{center}
+    \begin{block}{a shell script}
+        \begin{bashcode}
+            #!/bin/bash
+            gcc -c -o a.o a.c
+            g++ -c -o b.o b.cpp
+            g++ -o exe a.o b.o
+        \end{bashcode}
+    \end{block}
+\end{frame}
+
+\note[itemize]{
+\item 现代语言，比如python和java，并非没有链接。
+    链接的本质是模块化。
+}
+
+\begin{frame}
+    \frametitle{C/C++的编译：事情开始起变化}
+    \begin{columns}
+        \begin{column}{.48\textwidth}
+            \includegraphics[height=0.8\textheight]{pics/build-complex.png}
+        \end{column}
+        \begin{column}{.5\textwidth}
+            \begin{itemize}
+                \item 构建图庞大、复杂
+                \item 增量构建
+                \item 并行构建
+                \item IDE友好
+            \end{itemize}
+        \end{column}
+    \end{columns}
+\end{frame}
+
+\note[itemize]{
+\footnotesize
+\item 我当年刚去阿里云的时候，优化了一把构建，从几个小时优化到几分钟。
+    一举成名。
+    此事影响深远，譬如daily build、TDD，从此皆有可能。
+    我收获的经验是：
+    \begin{enumerate}
+        \item 软件工程的实践非常依赖基础设施。
+            基础设施不到位，优秀的软件工程不过是空中楼阁。
+        \item 然而管理基础设施的改进却是难题。
+            一者不知道基础设施有问题，二者知道有问题但如之奈何，三者基础设施必定持续腐化。
+    \end{enumerate}
+    “诸葛在时，亦不觉异；自公殁后，不见其比。"(房玄龄《晋书》)
+    犹基础设施之谓也。
+\item 所谓构建图，抽象来讲就是一张DAG，提供增量构建和并行构建的能力。
+    其实是一张hypergraph，有resources(方)和processors(圆)两种节点。
+\item 增量构建：一个资源只有自己直接或间接依赖的（方或圆）节点发生变化了才被构建。
+    比如如果修改了图中a.c，那么只有a.o和exe1需要重新构建。
+    而如果修改了图中b.h，那么几乎全图都要重新刷一遍。
+\item 由codegen生成的代码的场景还挺丰富。
+    包括但不限于：
+    \begin{itemize}
+    \item 跨平台
+    \item protocol/schema codegen
+    \item 版本号
+        \begin{itemize}
+            \item ORD把版本号写进头文件的做法是有问题的。问题是什么？
+        \end{itemize}
+    \end{itemize}
+}
+
+\begin{frame}
+    \frametitle{构建系统简史}
+    \begin{block}{~}
+        \begin{enumerate}
+            \item 初代目
+                \begin{itemize}
+                    \item make: 构建图
+                \end{itemize}
+            \item 二代目：寒武纪物种大爆发
+                \begin{itemize}
+                    \item scons: 易定制
+                    \item ant: IDE-friendly DSL
+                    \item maven: package management
+                \end{itemize}
+            \item 三代目：前后端分离
+                \begin{itemize}
+                    \item cmake: 专心画图
+                    \item ninja: 专心构建
+                \end{itemize}
+        \end{enumerate}
+    \end{block}
+\end{frame}
+
+\note[itemize]{
+\item cmake: 专心画好构建图。
+    为软件的模块化开发提供了支持。
+    也有插件提供包管理，但被C/C++拖累，不太成功。
+    但语法老派，一股TCL味。
+\item ninja: 专心构建，快。语法简单，但方便parsing。
+    \begin{itemize}
+        \item IDE才不关心怎么编译一个.o出来。
+            IDE关心，你这个.c都include了哪些.h，都在哪里可以找到。
+            而cmake生成的ninja file恰好包含了这些信息。
+    \end{itemize}
+\item ORD虽然用到了cmake，但还是以makefile为后端。
+    并且似乎用了一些makefile上的黑魔法，不太容易把ninja用起来。
+    不太容易的意思是，我搞了5分钟，没搞定。
+}
+
+\begin{frame}[fragile]
+    \frametitle{fassert：一个例子}
+    \begin{block}{in fassert/src}
+        \small
+        \begin{minted}[autogobble]{cmake}
+            add_library(fassert STATIC fassert.cpp)
+            target_link_libraries(fassert PUBLIC prettyprint)
+            target_include_directories(fassert PUBLIC .)
+        \end{minted}
+    \end{block}
+    \begin{block}{in user-side}
+        \small
+        \begin{minted}[autogobble]{cmake}
+            add_subdirectory(fancy_assert/src)
+            target_link_libraries(user_lib fassert)
+        \end{minted}
+    \end{block}
+    \begin{block}{in user-side .cpp/.hpp}
+        \small
+        \begin{cppcode}
+            #include "fassert.hpp"
+        \end{cppcode}
+    \end{block}
+\end{frame}
+
+\note[itemize]{
+\item 每个库只需要说明自己直接依赖了什么。
+    不需要处理include path，也不需要处理.a ordering。
+}
+
+\section{符号}
+
+\subsection{什么产生符号、产生什么符号}
+
+\begin{frame}
+    \frametitle{符号}
+    \begin{block}{一个例子}
+        \includegraphics[width=\textwidth]{pics/gpl_unittest.png}
+    \end{block}
+\end{frame}
+
+\note[itemize]{
+\item 不需要执行程序就能知道程序的版本。
+    这点在调查coredump特别有用。
+}
+
+\begin{frame}[fragile,t]
+    \frametitle{符号}
+    \scriptsize
+    \begin{exampleblock}{a.c}
+        \begin{cppcode}
+            #define AAA 100;
+            int main() {
+                return 0;
+            }
+        \end{cppcode}
+    \end{exampleblock}
+    \begin{block}{~}
+        \begin{consolecode}
+            $ nm exe | grep AAA
+        \end{consolecode}
+    \end{block}
+\end{frame}
+
+\note[itemize]{
+\item 什么都没有。
+\item 顺带一提，这个时候AAA也没有类型。
+}
+
+\begin{frame}[fragile,t]
+    \frametitle{符号}
+    \scriptsize
+    \begin{exampleblock}{a.c}
+        \begin{cppcode}
+            #define AAA 100;
+            int main() {
+                int a = AAA;
+                return 0;
+            }
+        \end{cppcode}
+    \end{exampleblock}
+    \begin{block}{~}
+        \begin{consolecode}
+            $ nm exe | grep AAA
+        \end{consolecode}
+    \end{block}
+\end{frame}
+
+\note[itemize]{
+\item 还是什么都没有。
+}
+
+\begin{frame}[fragile,t]
+    \frametitle{符号}
+    \scriptsize
+    \begin{exampleblock}{a.c}
+        \begin{cppcode}
+            const int AAA = 100;
+            int main() {
+                return 0;
+            }
+        \end{cppcode}
+    \end{exampleblock}
+    \begin{block}{~}
+        \begin{consolecode}
+            $ nm exe | grep AAA
+            0000000000002004 r AAA
+        \end{consolecode}
+    \end{block}
+\end{frame}
+
+\note[itemize]{
+\item 如果没开编译优化，就有了。
+    开了编译优化就没了。
+\item 即使加上了赋值，也还是这样。
+}
+
+\begin{frame}[fragile,t]
+    \frametitle{符号}
+    \scriptsize
+    \begin{exampleblock}{a.c}
+        \begin{cppcode}
+            #include <stdio.h>
+            const int AAA = 100;
+            int main() {
+                const int* a = &AAA;
+                printf("%p\n", a);
+                return 0;
+            }
+        \end{cppcode}
+    \end{exampleblock}
+    \begin{block}{~}
+        \begin{consolecode}
+            $ nm exe | grep AAA
+            0000000000002004 r AAA
+        \end{consolecode}
+    \end{block}
+\end{frame}
+
+\note[itemize]{
+\item 取地址，自然需要有地址，所以会在.rodata段给安排上。
+}
+
+\begin{frame}[fragile,t]
+    \frametitle{符号}
+    \scriptsize
+    \begin{exampleblock}{a.c}
+        \begin{cppcode}
+            #include <stdio.h>
+            int AAA = 100;
+            int main() {
+                AAA++;
+                int a = AAA;
+                printf("%p\n", &a);
+                return 0;
+            }
+        \end{cppcode}
+    \end{exampleblock}
+    \begin{block}{~}
+        \begin{consolecode}
+            $ nm exe | grep AAA
+            0000000000004010 D AAA
+        \end{consolecode}
+    \end{block}
+\end{frame}
+
+\note[itemize]{
+\item 要能修改，自然内存里需要占个地儿。所以也会在.data段给安排上。
+}
+
+\begin{frame}[fragile,t]
+    \frametitle{符号}
+    \scriptsize
+    \begin{columns}[t]
+        \begin{column}{.3\textwidth}
+            \begin{exampleblock}{a.c}
+                \begin{cppcode}
+                    #include <stdio.h>
+                    #include "b.h"
+                    int main() {
+                        int a = AAA;
+                        printf("%p\n", &a);
+                        return 0;
+                    }
+                \end{cppcode}
+            \end{exampleblock}
+        \end{column}
+        \begin{column}{.33\textwidth}
+            \begin{exampleblock}{b.h}
+                \begin{cppcode}
+                    #pragma once
+                    extern int AAA;
+                \end{cppcode}
+            \end{exampleblock}
+        \end{column}
+        \begin{column}{.33\textwidth}
+            \begin{exampleblock}{b.c}
+                \begin{cppcode}
+                    #include "b.h"
+                    int AAA = 100;
+                \end{cppcode}
+            \end{exampleblock}
+        \end{column}
+    \end{columns}
+    \begin{block}{~}
+        \begin{consolecode}
+            $ nm exe | grep AAA
+            0000000000004010 D AAA
+            $ nm a.o | grep AAA
+                             U AAA
+            $ nm b.o | grep AAA
+            0000000000000000 D AAA
+        \end{consolecode}
+    \end{block}
+\end{frame}
+
+\note[itemize]{
+\item 跨了两个编译单元。
+    编译a.c的时候不知道AAA究竟是啥，所以编译器只能给在.data段给安排上。
+\item 在a.o里AAA的标记是U (undefined)。
+    意思是我这里用到了这个，但我不知道是啥。
+\item 在b.o这里AAA的标记是D (在.data段)。
+\item 所以我们知道了，符号是一个名字。
+    在磁盘上的时候，它代表某个内容；
+    在内存里的时候，它代表一个加载时候确定的地址。
+}
+
+\begin{frame}[fragile,t]
+    \frametitle{符号}
+    \scriptsize
+    \begin{columns}[t]
+        \begin{column}{.3\textwidth}
+            \begin{exampleblock}{a.c}
+                \begin{cppcode}
+                    #include <stdio.h>
+                    #include "b.h"
+                    int main() {
+                        int a = AAA;
+                        printf("%p\n", &a);
+                        return 0;
+                    }
+                \end{cppcode}
+            \end{exampleblock}
+        \end{column}
+        \begin{column}{.33\textwidth}
+            \begin{exampleblock}{b.h}
+                \begin{cppcode}
+                    #pragma once
+                    extern int AAA;
+                \end{cppcode}
+            \end{exampleblock}
+        \end{column}
+        \begin{column}{.33\textwidth}
+            \begin{exampleblock}{b.c}
+                \begin{cppcode}
+                    #include "b.h"
+                \end{cppcode}
+            \end{exampleblock}
+        \end{column}
+    \end{columns}
+    \begin{onlyenv}<2>
+        \begin{block}{~}
+            \begin{consolecode}
+                /usr/bin/ld: a.o: in function `main':
+                a.cpp:(.text.startup+0x24): undefined reference to `AAA'
+                collect2: error: ld returned 1 exit status
+            \end{consolecode}
+        \end{block}
+    \end{onlyenv}
+\end{frame}
+
+\begin{frame}[fragile,t]
+    \frametitle{符号}
+    \scriptsize
+    \begin{columns}[t]
+        \begin{column}{.3\textwidth}
+            \begin{exampleblock}{a.c}
+                \begin{cppcode}
+                    #include "b.h"
+                    int main() {
+                        pp();
+                        return 0;
+                    }
+                \end{cppcode}
+            \end{exampleblock}
+        \end{column}
+        \begin{column}{.33\textwidth}
+            \begin{exampleblock}{b.h}
+                \begin{cppcode}
+                    #pragma once
+                    void pp();
+                \end{cppcode}
+            \end{exampleblock}
+        \end{column}
+        \begin{column}{.33\textwidth}
+            \begin{exampleblock}{b.c}
+                \begin{cppcode}
+                    #include "b.h"
+                    #include <cstdio>
+                    void pp() {
+                        printf("Hello\n");
+                    }
+                \end{cppcode}
+            \end{exampleblock}
+        \end{column}
+    \end{columns}
+    \begin{block}{~}
+        \begin{consolecode}
+            $ nm a.o
+            0000000000000000 T main
+                             U pp()
+            $ nm b.o
+            0000000000000000 r .LC0
+                             U puts
+            0000000000000000 T pp()
+            $ nm exe
+            ...
+            0000000000001170 T pp()
+        \end{consolecode}
+    \end{block}
+\end{frame}
+
+\note[itemize]{
+\item a.o里面是U，b.o里面是T (在.text段)。
+    链接之后是T。
+    合乎预期。
+}
+
+\begin{frame}[fragile,t]
+    \frametitle{符号}
+    \scriptsize
+    \begin{columns}[t]
+        \begin{column}{.3\textwidth}
+            \begin{exampleblock}{a.c}
+                \begin{cppcode}
+                    #include "b.h"
+                    int main() {
+                        pp();
+                        return 0;
+                    }
+                \end{cppcode}
+            \end{exampleblock}
+        \end{column}
+        \begin{column}{.33\textwidth}
+            \begin{exampleblock}{b.h}
+                \begin{cppcode}
+                    #pragma once
+                    #include <cstdio>
+                    void pp() {
+                        printf("Hello\n");
+                    }
+                \end{cppcode}
+            \end{exampleblock}
+        \end{column}
+        \begin{column}{.33\textwidth}
+            \begin{exampleblock}{b.c}
+                \begin{cppcode}
+                    #include "b.h"
+                    void qq() {
+                        pp();
+                    }
+                \end{cppcode}
+            \end{exampleblock}
+        \end{column}
+    \end{columns}
+    \begin{block}{~}
+        \begin{consolecode}
+            $ gcc -o exe a.o b.o
+            /usr/bin/ld: b.o: in function `pp()':
+            b.cpp:(.text+0x0): multiple definition of `pp()'; a.o:a.cpp:(.text+0x0): first defined here
+            collect2: error: ld returned 1 exit status
+            $ nm a.o
+            ...
+            0000000000001170 T pp()
+            $ nm b.o
+            ...
+            0000000000000000 T pp()
+        \end{consolecode}
+    \end{block}
+\end{frame}
+
+\begin{frame}[fragile,t]
+    \frametitle{符号}
+    \scriptsize
+    \begin{columns}[t]
+        \begin{column}{.3\textwidth}
+            \begin{exampleblock}{a.c}
+                \begin{cppcode}
+                    #include "b.h"
+                    int main() {
+                        pp();
+                        return 0;
+                    }
+                \end{cppcode}
+            \end{exampleblock}
+        \end{column}
+        \begin{column}{.33\textwidth}
+            \begin{exampleblock}{b.h}
+                \begin{cppcode}
+                    #pragma once
+                    #include <cstdio>
+                    inline void pp() {
+                        printf("Hello\n");
+                    }
+                \end{cppcode}
+            \end{exampleblock}
+        \end{column}
+        \begin{column}{.33\textwidth}
+            \begin{exampleblock}{b.c}
+                \begin{cppcode}
+                    #include "b.h"
+                    void qq() {
+                        pp();
+                    }
+                \end{cppcode}
+            \end{exampleblock}
+        \end{column}
+    \end{columns}
+    \begin{block}{~}
+        \begin{consolecode}
+            $ nm a.o
+            ...
+            0000000000000000 W pp()
+            $ nm b.o
+            ...
+            0000000000000000 W pp()
+        \end{consolecode}
+    \end{block}
+\end{frame}
+
+\note[itemize]{
+\item 在C/C++标准里，inline关键字只是给编译器是否内联的一个hint。
+    编译器可以内联也可以不内联（现代编译器倾向于忽略）。
+    所以inline关键字实际的作用是产生W符号（weak符号）。
+\item 链接器会将同名的弱符号只保留一份。
+    至于保留哪一份，随缘吧。
+}
+
+\begin{frame}[fragile]
+    \frametitle{符号}
+    \scriptsize
+    \begin{exampleblock}{各种符号规则}
+        \begin{cppcode}
+            class A {
+            public:
+                const int a = 100; // 弱符号
+                void b() {} // 弱符号
+                void c();
+                void d();
+            };
+            void A::c() {} // 强符号
+            inline void A::d() {} // 弱符号
+        \end{cppcode}
+    \end{exampleblock}
+\end{frame}
+
+\note[itemize]{
+\item 毫无一致性可言。
+}
+
+\subsection{Name Mangling}
+
+\begin{frame}[fragile]
+    \frametitle{Name Mangling}
+    \scriptsize
+    \begin{block}{~}
+        \begin{cppcode}
+            #pragma once
+            #include <cstdio>
+            inline void pp() {
+                printf("Hello\n");
+            }
+        \end{cppcode}
+        \begin{consolecode}
+            $ nm b.o
+                             U puts
+            0000000000000000 W _Z2ppv
+            0000000000000000 T _Z2qqv
+        \end{consolecode}
+    \end{block}
+\end{frame}
+
+\note[itemize]{
+\item C++为什么要做name mangling？
+    C++有函数重载、模板。C++在产生符号的时候需要编码更多信息才可以避免重名。
+\item C-C++ co-operation怎么办？
+}
+
+\begin{frame}[fragile]
+    \frametitle{Name Mangling}
+    \scriptsize
+    \begin{block}{~}
+        \begin{cppcode}
+            #pragma once
+            #include <cstdio>
+            extern "C" inline void pp() {
+                printf("Hello\n");
+            }
+        \end{cppcode}
+        \begin{consolecode}
+            $ nm b.o
+            0000000000000000 W pp
+                             U puts
+            0000000000000000 T _Z2qqv
+        \end{consolecode}
+    \end{block}
+\end{frame}
+
+\note[itemize]{
+\item \mintinline{cpp}{extern "C"}理论上除了名字，还包括calling convention的变化。
+    calling convention的意思是，
+    \begin{itemize}
+    \item 参数压栈的时候从左往右还是从右往左
+    \item 寄存器传参的时候用哪几个寄存器
+    \item 返回值放哪里
+    \item 返回到哪里去
+    \end{itemize}
+    但一般编译器不会自己给自己找麻烦，gcc/g++不会用不同的calling convention，
+    clang也不会。
+}
+
+\section{链接与装载}
+
+\subsection{ELF}
+
+\begin{frame}
+    \frametitle{各种文件的分类}
+    \begin{center}
+        \includegraphics{pics/build-files.png}
+    \end{center}
+\end{frame}
+
+\note[itemize]{
+\item .a和.so虽然都是库，但格式其实差别很大。
+    .a基本上是一堆.o打包再加上索引。
+    但是我也见过把.a解压之后的.o缺符号的。
+    原因不清楚。
+}
+
+\begin{frame}[fragile]
+    \frametitle{ELF文件}
+    \begin{block}{~}
+        \scriptsize
+        \begin{cppcode}
+            #include <stdio.h>
+            const char HELLO[] = "Hello World!";
+            void print() {printf("%s\n", HELLO);}
+            int main() {print();return 0;}
+        \end{cppcode}
+    \end{block}
+    \begin{block}{~}
+        \scriptsize
+        \begin{bashcode}
+            $ objdump --headers exe
+            Idx Name    Size      VMA               LMA               File off  Algn
+            11 .init    0000001b  0000000000001000  0000000000001000  00001000  2**2
+                        CONTENTS, ALLOC, LOAD, READONLY, CODE
+            15 .text    0000011c  0000000000001060  0000000000001060  00001060  2**4
+                        CONTENTS, ALLOC, LOAD, READONLY, CODE
+            16 .init_array   00000010  0000000000003d98  0000000000003d98  00002d98  2**3
+                        CONTENTS, ALLOC, LOAD, DATA
+            17 .rodata  00000015  0000000000002000  0000000000002000  00002000  2**3
+                        CONTENTS, ALLOC, LOAD, READONLY, DATA
+            24 .data    00000010  0000000000004000  0000000000004000  00003000  2**3
+                        CONTENTS, ALLOC, LOAD, DATA
+            25 .bss     00000008  0000000000004010  0000000000004010  00003010  2**0
+                        ALLOC
+            ...
+        \end{bashcode}
+    \end{block}
+\end{frame}
+
+\note[itemize]{
+\item ELF的每个段(segment)在加载的时候会被加载到连续的内存(section)里。
+    OS的内存一页(page)一般是4KB。
+    所以section一般是4KB的整数倍。
+    为了提高内存利用率，几个segments可能被塞到同一个section里。
+    现代CPU可以给内存页打上不同的标签（可执行、可读、可写），所以只有flag相同的segments可以塞进同一个section。
+\item 常见各段的含义
+    \begin{itemize}
+        \item .init\qquad 程序初始化函数
+        \item .text\qquad 代码
+        \item .rodata\qquad 只读全局数据
+        \item .data/.bss\qquad 全局数据
+    \end{itemize}
+}
+
+\begin{frame}[fragile]
+    \frametitle{一个程序是怎么执行的？}
+    \scriptsize
+        \begin{block}{~}
+            \begin{bashcode}
+                $ objdump --disassemble exe
+            \end{bashcode}
+        \end{block}
+        \begin{block}{~}
+            \begin{minted}[autogobble]{text}
+                Disassembly of section .init:
+
+                0000000000001000 <_init>:
+                endbr64
+                sub    $0x8,%rsp
+                mov    0x2fd9(%rip),%rax # 3fe8 <__gmon_start__@Base>
+                test   %rax,%rax
+                je     1016 <_init+0x16>
+                call   *%rax
+                add    $0x8,%rsp
+                ret
+            \end{minted}
+        \end{block}
+\end{frame}
+
+\note[itemize]{
+\item OS加载了exe之后会调用.init段的\_init函数。
+    现在这个函数不做任何事情。
+}
+
+\begin{frame}[fragile]
+    \frametitle{一个程序是怎么执行的？}
+    \scriptsize
+    \begin{block}{~}
+        \begin{minted}[autogobble]{text}
+            Disassembly of section .text:
+
+            0000000000001060 <_start>:
+            endbr64
+            xor    %ebp,%ebp
+            mov    %rdx,%r9
+            pop    %rsi
+            mov    %rsp,%rdx
+            and    $0xfffffffffffffff0,%rsp
+            push   %rax
+            push   %rsp
+            xor    %r8d,%r8d
+            xor    %ecx,%ecx
+            lea    0xe4(%rip),%rdi # 1163 <main>
+            call   *0x2f53(%rip)   # 3fd8 <__libc_start_main@GLIBC_2.34>
+            hlt
+            cs nopw 0x0(%rax,%rax,1)
+        \end{minted}
+    \end{block}
+\end{frame}
+
+\note[itemize]{
+\item OS然后会去找.text段的\_start函数。
+\item \_start函数还是gcc生成的。
+    它会把main函数作为参数调用libc-start-main函数。
+    这么处理的原因是，根据C语言标准，main函数在执行之前要安排好一些事情：
+    \begin{itemize}
+    \item 命令行参数
+    \item 环境变量
+    \item C++的话还有异常捕获
+    \end{itemize}
+}
+
+\begin{frame}[fragile]
+    \frametitle{一个程序是怎么执行的？}
+    \scriptsize
+    \begin{columns}[t]
+        \begin{column}{.45\textwidth}
+            \begin{block}{~}
+            \begin{cppcode}
+                #include <stdio.h>
+
+                const char HELLO[]
+                    = "Hello World!";
+
+                void print() {
+                    printf("%s\n", HELLO);
+                }
+
+                int main() {
+                    print();
+                    return 0;
+                }
+            \end{cppcode}
+            \end{block}
+        \end{column}
+        \begin{column}{.5\textwidth}
+            \begin{minted}[autogobble]{text}
+                Disassembly of section .text:
+
+                0000000000001149 <print>:
+                endbr64
+                push   %rbp
+                mov    %rsp,%rbp
+                lea    0xeb0(%rip),%rax # 2008 <HELLO>
+                mov    %rax,%rdi
+                call   1050 <puts@plt>
+                nop
+                pop    %rbp
+                ret
+
+                0000000000001163 <main>:
+                endbr64
+                push   %rbp
+                mov    %rsp,%rbp
+                mov    $0x0,%eax
+                call   1149 <print>
+                mov    $0x0,%eax
+                pop    %rbp
+                ret
+            \end{minted}
+        \end{column}
+    \end{columns}
+\end{frame}
+
+\note[itemize]{
+\item 从这里开始才是我们在代码里能看到的main函数、print函数和HELLO常量。
+}
+
+\begin{frame}
+    \frametitle{一个程序是怎么执行的？}
+    \begin{block}{Question}
+        \begin{enumerate}
+        \item<1-> 如果我想发布一个压缩的可执行文件，要怎么做？
+            \begin{itemize}
+            \item 实际上有现成的工具了，UPX。
+            \end{itemize}
+        \item<2-> 全局变量在哪里构造？
+            \begin{itemize}
+            \item C的全局变量不需要构造，只需要装载。
+            \item 那么C++的全局变量呢？
+            \end{itemize}
+        \end{enumerate}
+    \end{block}
+\end{frame}
+
+\begin{frame}[fragile]
+    \frametitle{全局变量的构造与析构}
+    \scriptsize
+    \begin{block}{~}
+        \begin{cppcode}
+        #include <cstdio>
+        struct S {
+            int a;
+            S(int x) : a(x) {printf("init %d\n", a);}
+            ~S() {printf("deinit: %d\n", a);}
+        };
+        S s(1);
+        void print() {printf("Hello: %d\n", s.a);}
+        int main() {print();return 0;}
+        \end{cppcode}
+    \end{block}
+\end{frame}
+
+\begin{frame}[fragile]
+    \frametitle{全局变量的构造与析构}
+    \scriptsize
+    \begin{onlyenv}<1,2>
+        \begin{block}{.init\_array}
+            \begin{minted}[autogobble]{text}
+                Contents of section .init_array:
+                3d98 60110000 00000000 ff110000 00000000  `...............
+            \end{minted}
+        \end{block}
+    \end{onlyenv}
+    \begin{onlyenv}<2,3>
+        \begin{block}{\_GLOBAL\_\_sub\_I\_s}
+            \begin{minted}[autogobble]{text}
+                00000000000011ff <_GLOBAL__sub_I_s>:
+                11ff: endbr64
+                1203: push   %rbp
+                1204: mov    %rsp,%rbp
+                1207: mov    $0xffff,%esi
+                120c: mov    $0x1,%edi
+                1211: call   11a4 <__static_initialization_and_destruction_0(int, int)>
+                1216: pop    %rbp
+                1217: ret
+            \end{minted}
+        \end{block}
+    \end{onlyenv}
+    \begin{onlyenv}<4>
+        \begin{block}{\_\_static\_initialization\_and\_destruction\_0}
+            \begin{minted}[autogobble]{text}
+                00000000000011a4 <__static_initialization_and_destruction_0(int, int)>:
+                11a4: endbr64
+                ...
+                11b6: cmpl   $0x1,-0x4(%rbp)
+                11ba: jne    11fc <__static_initialization_and_destruction_0(int, int)+0x58>
+                11bc: cmpl   $0xffff,-0x8(%rbp)
+                11c3: jne    11fc <__static_initialization_and_destruction_0(int, int)+0x58>
+                11c5: mov    $0x1,%esi
+                11ca: lea    0x2e4b(%rip),%rax        # 401c <s>
+                11d1: mov    %rax,%rdi
+                11d4: call   1218 <S::S(int)>
+                11d9: lea    0x2e28(%rip),%rax        # 4008 <__dso_handle>
+                11e0: mov    %rax,%rdx
+                11e3: lea    0x2e32(%rip),%rax        # 401c <s>
+                11ea: mov    %rax,%rsi
+                11ed: lea    0x60(%rip),%rax        # 1254 <S::~S()>
+                11f4: mov    %rax,%rdi
+                11f7: call   1070 <__cxa_atexit@plt>
+                11fc: nop
+                11fd: leave
+                11fe: ret
+            \end{minted}
+        \end{block}
+    \end{onlyenv}
+\end{frame}
+
+\note[itemize]{
+\item 11b6-11c5: 检查、设置标志位，防止重复构造。
+    \begin{itemize}
+    \item 新实现使得一个全局对象的构造和析构在多个.so里也不会在程序结束时出现double-free错误。
+        但不等于说这样做是好的。
+    \end{itemize}
+\item 11ca-11d4: 在s上调用构造函数。
+\item 11e0-11f7: 将s的析构函数注册到atexit函数的回调链上。
+}
+
+\subsection{静态库}
+
+\begin{frame}[fragile,t]
+    \frametitle{静态库}
+    \scriptsize
+    \begin{columns}[t]
+        \begin{column}{0.33\textwidth}
+            \begin{block}{a.cpp}
+                \begin{cppcode}
+                #include "b.hpp"
+                #include <cstdio>
+
+                void print() {
+                  printf("Hello: %d\n",
+                    s.a);
+                }
+
+                int main() {
+                  print();
+                  return 0;
+                }
+                \end{cppcode}
+            \end{block}
+        \end{column}
+        \begin{column}{0.2\textwidth}
+            \begin{block}{b.hpp}
+                \begin{cppcode}
+                #pragma once
+
+                struct S
+                {
+                    int a;
+
+                    S(int x);
+                    ~S();
+                };
+
+                extern S s;
+                \end{cppcode}
+            \end{block}
+        \end{column}
+        \begin{onlyenv}<1-2>
+            \begin{column}{0.33\textwidth}
+                \begin{block}{b.cpp}
+                    \begin{cppcode}
+                    #include "b.hpp"
+                    #include <cstdio>
+
+                    S::S(int x) : a(x) {
+                    printf("init %d\n",
+                        a);
+                    }
+                    S::~S() {
+                    printf("deinit: %d\n",
+                        a);
+                    }
+                    S s(1);
+                    \end{cppcode}
+                \end{block}
+            \end{column}
+        \end{onlyenv}
+        \begin{onlyenv}<3>
+            \begin{column}{0.33\textwidth}
+                \begin{block}{b.cpp}
+                    \begin{cppcode}
+                    #include "b.hpp"
+                    #include <cstdio>
+
+                    S::S(int x) : a(x) {
+                    printf("init %d\n",
+                        a);
+                    }
+                    S::~S() {
+                    printf("deinit: %d\n",
+                        a);
+                    }
+                    S s(1);
+                    void xxx() {}
+                    \end{cppcode}
+                \end{block}
+            \end{column}
+        \end{onlyenv}
+    \end{columns}
+    \begin{onlyenv}<1>
+        \begin{block}{Link with static library}
+            \begin{bashcode}
+                g++ -c -o b.o b.cpp
+                ar r libxxx.a b.o
+                g++ -c -o a.o a.cpp
+                g++ -o exe a.o -lxxx -L.
+            \end{bashcode}
+        \end{block}
+    \end{onlyenv}
+    \begin{onlyenv}<2>
+        \begin{block}{Link without static library}
+            \begin{bashcode}
+                g++ -c -o b.o b.cpp
+                g++ -c -o a.o a.cpp
+                g++ -o exe a.o b.o
+            \end{bashcode}
+        \end{block}
+    \end{onlyenv}
+\end{frame}
+
+\note[itemize]{
+\item 那么这两种方式的成果有没有区别呢？
+}
+
+\begin{frame}[fragile,t]
+    \frametitle{静态库}
+    \begin{columns}[t]
+        \begin{column}{.45\textwidth}
+            \begin{block}{Link with static library}
+                \begin{bashcode}
+                    g++ -c -o b.o b.cpp
+                    ar r libxxx.a b.o
+                    g++ -c -o a.o a.cpp
+                    g++ -o exe a.o -lxxx -L.
+                \end{bashcode}
+            \end{block}
+        \end{column}
+        \begin{column}{.45\textwidth}
+            \begin{block}{Link without static library}
+                \begin{bashcode}
+                    g++ -c -o b.o b.cpp
+                    g++ -c -o a.o a.cpp
+                    g++ -o exe a.o b.o
+                \end{bashcode}
+            \end{block}
+        \end{column}
+    \end{columns}
+    \begin{block}{结果}
+        \begin{consolecode}
+            $ nm --demangle exe | grep xxx
+            000000000000122f T xxx()
+        \end{consolecode}
+    \end{block}
+\end{frame}
+
+\note[itemize]{
+\item 现代gcc已经将两种方式的结果改成一样了。
+    这很好。
+    早年的时候，静态库里不用的符号不会被链接到exe里。
+    经常有人问我：为什么我把静态库改成动态库就报缺符号的错误？
+    我调查之后告诉他：
+    你本来就缺符号，只是恰好没有人用到。
+}
+
+\subsection{动态库}
+
+\begin{frame}[fragile,t]
+    \frametitle{动态库}
+    \scriptsize
+    \begin{columns}[t]
+        \begin{column}{0.33\textwidth}
+            \begin{block}{a.cpp}
+                \begin{cppcode}
+                #include "b.hpp"
+                #include <cstdio>
+
+                int main() {
+                  s.print();
+                  return 0;
+                }
+                \end{cppcode}
+            \end{block}
+        \end{column}
+        \begin{column}{0.3\textwidth}
+            \begin{block}{b.hpp}
+                \begin{cppcode}
+                #pragma once
+
+                struct S
+                {
+                  int a;
+
+                  S(int x);
+                  ~S();
+                  void print();
+                };
+
+                extern S s;
+                \end{cppcode}
+            \end{block}
+        \end{column}
+        \begin{column}{0.33\textwidth}
+            \begin{block}{b.cpp}
+                \begin{cppcode}
+                #include "b.hpp"
+                #include <cstdio>
+
+                S::S(int x) : a(x) {}
+                S::~S() {}
+                void S::print() {
+                  printf("s: %d\n",
+                    a);
+                }
+                S s(1);
+                \end{cppcode}
+            \end{block}
+        \end{column}
+    \end{columns}
+    \begin{onlyenv}<1>
+        \begin{block}{Link with shared library}
+            \begin{bashcode}
+                g++ -fPIC -c -o b.o b.cpp
+                g++ -shared -o libxxx.so b.o
+                g++ -c -o a.o a.cpp
+                g++ -Wl,--as-needed -o exe a.o -lxxx -L.
+            \end{bashcode}
+        \end{block}
+    \end{onlyenv}
+    \begin{onlyenv}<2>
+        \begin{block}{然后，什么鬼？}
+            \begin{consolecode}
+                $ nm --demangle exe
+                ...
+                0000000000001060 T _start
+                                 U S::print()
+            \end{consolecode}
+        \end{block}
+    \end{onlyenv}
+\end{frame}
+
+\note[itemize]{
+\item 代码里，函数调用指令接受的参数都是一个地址。
+\item 而动态库里的符号，在装载之前还不知道位置。
+}
+
+\begin{frame}[fragile]
+    \frametitle{Position-Independent Code, PIC}
+    \scriptsize
+    \begin{consolecode}
+        $ objdump --disassemble --demangle exe
+        ...
+        Disassembly of section .text:
+        0000000000001149 <main>:
+            1149: endbr64
+            114d: push   %rbp
+            114e: mov    %rsp,%rbp
+            1151: mov    0x2e90(%rip),%rax        # 3fe8 <s@Base>
+            1158: mov    %rax,%rdi
+            115b: call   1050 <S::print()@plt>
+            1160: mov    $0x0,%eax
+            1165: pop    %rbp
+            1166: ret
+
+        Disassembly of section .plt.sec:
+        0000000000001050 <S::print()@plt>:
+            1050: endbr64
+            1054: bnd jmp *0x2f6d(%rip)        # 3fc8 <S::print()@Base>
+            105b: nopl   0x0(%rax,%rax,1)
+        ...
+    \end{consolecode}
+\end{frame}
+
+\note[itemize]{
+\item 调用者不直接调用函数S::print()，转而去调用函数的stub (S::print()@plt)。
+    这样动态库的装载器就可以在运行时修改stub，填入函数的正确入口。
+    （完整的过程比现在讲的要复杂一点，就不展开了）
+\item 因此，符号表对动态装载很重要。
+    so是不能strip -s的。
+\item 值得细讲的一点。
+    \begin{itemize}
+    \item main里面是通过call指令去stub，但stub里是通过jmp指令跳到实际的函数。
+        那么，实际函数返回的ret指令直接回到main，并不经过stub。
+    \end{itemize}
+    动态函数的调用经过两次跳转，那么性能如何？
+    很多资料会说在5\%之内。
+    我要告诉大家，日常场景下没有可以观察到的影响。
+    现代CPU的流水线架构，怕条件分支，基本不怕跳转。
+}
+
+\begin{frame}
+    \frametitle{动态库}
+    \begin{block}{动态库有什么用？}
+        \begin{itemize}
+        \item 合规
+        \item Foreign-Function Interface, FFI
+        \item 加速整体构建
+            \begin{itemize}
+            \item 静态发布
+            \item 动态测试
+            \end{itemize}
+        \end{itemize}
+    \end{block}
+\end{frame}
+
+\note[itemize]{
+\item 合规：著名的LGPL。
+\item FFI: 比如go，如果我没记错，在.init里加载了一个golang vm。
+\item 构建：实践中，链接的时间占大头；链接的时间里，磁盘IO的时间占大头。
+    去链接动态库时由于不需要复制符号的内容，可以节省大量的时间。
+    前面讲的阿里的那个优化的核心就是测试动态链接化。
+}
+
+\begin{frame}[plain]
+    \begin{center}
+        \includegraphics{pics/secret_kungfu.jpg}
+    \end{center}
+\end{frame}
+
+\end{document}
