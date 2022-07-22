@@ -1,5 +1,8 @@
 # -*- python -*-
 Import('env')
 
-pdf = env.beamer('lesson1.tex')
+pdf = [
+    env.beamer('lesson1.tex'),
+    env.beamer('lesson2.tex'),
+]
 env.Default(pdf)

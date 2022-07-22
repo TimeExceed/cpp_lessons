@@ -1,0 +1,455 @@
+\documentclass[UTF8,lualatex]{ctexbeamer}
+\usepackage{tabu}
+\usepackage{amsmath}
+\usepackage{graphicx}
+\usepackage{minted}
+
+\usetheme{Frankfurt}
+\setbeamertemplate{note page}[plain]
+% $BEAMER_NOTES
+
+\title{\kaishu Modern C++ and Beyond\\
+    第二课：Move Semantics}
+    \author{陶大}
+    \date{2022年7月}
+
+\newminted{cpp}{autogobble}
+\newminted{rust}{autogobble}
+
+\renewcommand{\emph}[1]{\textbf{#1}}
+
+\begin{document}
+\songti
+
+\begin{frame}[plain]
+    \titlepage
+\end{frame}
+
+\begin{frame}[plain]
+    \begin{center}
+        \includegraphics[height=.8\textheight]{pics/kungfu_category.jpg}
+    \end{center}
+\end{frame}
+
+\begin{frame}[plain]
+    \tableofcontents
+\end{frame}
+
+\section{Why move-semantics is useful}
+\subsection{Return-Value Optimization}
+
+\begin{frame}[fragile]
+    \frametitle{Return-Value Optimization, RVO}
+    \begin{block}{An example from zlib}
+        \begin{cppcode}
+            int deflateInit(z_streamp strm, int level);
+            int deflate(z_streamp strm, int flush);
+            int deflateEnd(z_streamp strm);
+        \end{cppcode}
+    \end{block}
+    \begin{alertblock}{Question}
+        为什么返回值是int，而不是一个struct？
+    \end{alertblock}
+\end{frame}
+
+\begin{frame}[fragile]
+    \frametitle{Return-Value Optimization, RVO}
+    \begin{columns}
+        \begin{column}{.45\textwidth}
+            \begin{onlyenv}<1>
+                \includegraphics{pics/stack0.png}
+            \end{onlyenv}
+            \begin{onlyenv}<2>
+                \includegraphics{pics/stack1.png}
+            \end{onlyenv}
+        \end{column}
+        \begin{column}{.45\textwidth}
+            \begin{cppcode}
+                int g(int x) {
+                    int y = x * x;
+                    return y;
+                }
+                void f() {
+                    int a = g(1);
+                }
+            \end{cppcode}
+        \end{column}
+    \end{columns}
+\end{frame}
+
+\note[itemize]{
+\item 左图是右边程序的一个可能的栈内存的排布。
+    \begin{itemize}
+    \item \emph{此处应询问听众是否了解栈内存和堆内存！}
+    \item \mintinline{cpp}{return y} 将y复制到g的返回值。
+        然后弹掉g的栈。
+    \end{itemize}
+    这个复制是可以被优化掉的。
+    做法是直接将y指向返回值。
+}
+
+\begin{frame}[fragile]
+    \frametitle{Return-Value Optimization, RVO}
+    \begin{columns}[b]
+        \begin{column}{.45\textwidth}
+            \includegraphics{pics/stack0.png}
+        \end{column}
+        \begin{column}{.45\textwidth}
+            \includegraphics{pics/stack1.png}
+        \end{column}
+    \end{columns}
+    \begin{exampleblock}{~}
+        \begin{cppcode}
+            T g(T x) {
+                T y = do_something(x);
+                return y;
+            }
+            void f() {
+                T a = g(...);
+            }
+        \end{cppcode}
+    \end{exampleblock}
+\end{frame}
+
+\note[itemize]{
+\item 但如果我们把int换成某个类的话，事情就复杂了。
+    在C++里，复制一个类的对象，意味着调用它的拷贝构造函数。
+    那么，
+    \begin{itemize}
+    \item 有些类的复制极为耗费时间，比如vector这样的collections。
+    \item 有些类本质上不可复制，比如mutex。
+    \end{itemize}
+    这就意味着，一个优化有外部可观察的区别，那就不再是一个优化。
+    而是一个语言的feature。
+}
+
+\subsection{XValue}
+
+\begin{frame}[fragile]
+    \frametitle{XValue}
+    \begin{exampleblock}{~}
+        \begin{cppcode}
+            void f() {
+                T a = g(...);
+            }
+        \end{cppcode}
+    \end{exampleblock}
+\end{frame}
+
+\note[itemize]{
+\item 刚才的例子里还有一处赋值，就是这里。
+    这里赋值号右边的对象在C++里称为xvalue。
+    也有一些早期介绍move semantics的文章称为临时值。
+    其实这个值一点都不临时，生命期和局部值一样长。
+    它只是匿名。
+}
+
+\begin{frame}[fragile]
+    \frametitle{XValue}
+    \begin{exampleblock}{有名万物之母}
+        \begin{cppcode}
+            void f() {
+                const T& a = g(...);
+            }
+        \end{cppcode}
+    \end{exampleblock}
+\end{frame}
+
+\note[itemize]{
+\item 那么直接使用这个对象可以吗？
+    可以的。
+    通过const引用可以给它一个名字，就可以用了。
+\item 这里其实藏着C++设计的一个问题：
+    为什么不可以mutable引用？
+    我其实不理解这个不一致的设计。
+}
+
+\subsection{Collections}
+
+\begin{frame}[fragile]
+    \frametitle{Collections}
+    \begin{exampleblock}{~}
+        \begin{cppcode}
+            std::vector<T> ts;
+            const T& x = gen_t();
+            ts.push_back(x);
+            const T& y = gen_t();
+            ts.push_back(y);
+        \end{cppcode}
+    \end{exampleblock}
+    \begin{block}{Question}
+        \begin{itemize}
+        \item x被拷贝（构造）了几遍？
+        \end{itemize}
+    \end{block}
+\end{frame}
+
+\note[itemize]{
+\item 答案是：不知道。
+    \begin{itemize}
+    \item 在第一次入库的时候肯定会拷贝一次。
+    \item 问题是，当vector扩张的时候，会不会再拷贝一次呢？
+    \end{itemize}
+}
+
+\begin{frame}
+    \frametitle{Collections}
+    \begin{alertblock}{~}
+        一条规则：应当避免使用std::vector。代之以std::deque。
+    \end{alertblock}
+\end{frame}
+
+\note[itemize]{
+\item 关于这条规则，以后再展开。
+    std::deque的不扩张保证也可以避免指针失效。
+    所以在有move semantics的现代C++中也仍然适用。
+}
+
+\begin{frame}[fragile]
+    \frametitle{Collections}
+    \footnotesize
+    \begin{columns}
+        \begin{column}{.45\textwidth}
+            \begin{exampleblock}{~}
+                \begin{cppcode}
+                    std::deque<T> ts;
+                    const T& x = gen_t();
+                    ts.push_back(x);
+                \end{cppcode}
+            \end{exampleblock}
+        \end{column}
+        \begin{column}{.45\textwidth}
+            \begin{exampleblock}{~}
+                \begin{cppcode}
+                    std::deque<T> ts;
+                    ts.push_back(T());
+                    gen_t(ts.back());
+                \end{cppcode}
+            \end{exampleblock}
+        \end{column}
+    \end{columns}
+\end{frame}
+
+\note[itemize]{
+\item 回到第一次拷贝。
+    我们知道，有些对象不太好拷贝。
+    为此在C++11之前，老人家往往会这么设计API。
+    非常丑，但是实用。
+    \begin{itemize}
+    \item 反直觉。
+        默认构造的对象必须非常轻量。
+        而这件事情不见得所有类都有自然且轻量的默认值。
+        自然意味着类似自然数里的“0”。
+        还要求“0”的实现轻量，强人所难。
+        比如std::vector。
+        只要malloc一片内存，就不能算轻量。
+    \item 鼓励mutable对象的使用。
+    \end{itemize}
+}
+
+\section{C++: Move Semantics and Consequences}
+
+\begin{frame}[fragile]
+    \frametitle{C++: Move Semantics}
+    \begin{block}{以上场景的共性}
+        \emph{所有权的转移}
+        \begin{itemize}
+        \item 所有权、对象生命期是同一个问题的一体两面。
+        \item 所有权问题并非C++一家的问题。
+        \end{itemize}
+    \end{block}
+    \scriptsize
+    \begin{columns}[t]
+        \begin{column}{.65\textwidth}
+            \begin{exampleblock}{try-with-resource in Java}
+                \begin{minted}[autogobble]{java}
+                    try (
+                      FileReader fr = new FileReader(path);
+                      BufferedReader br = new BufferedReader(fr))
+                    {
+                      return br.readLine();
+                    }
+                \end{minted}
+            \end{exampleblock}
+        \end{column}
+        \begin{column}{.35\textwidth}
+            \begin{exampleblock}{defer in Go}
+                \begin{minted}[autogobble]{go}
+                    mutex.Lock()
+                    defer mutex.Unlock()
+                    count++
+                \end{minted}
+            \end{exampleblock}
+        \end{column}
+    \end{columns}
+\end{frame}
+
+\note[itemize]{
+\item 在对象生命期的终点，谁（一个对象或一个函数）管杀管埋，谁就有所有权。
+    RAII只是所有权的一种实现。
+\item 所有权问题并非C++一家的问题。
+    在Java/Go这些gc语言里，同样有这个问题。
+    千万不要认为JVM或Go VM持有对象的所有权。
+    GC只负责复用死对象的内存。
+    对象占用的资源不只是内存，更准确地说，不只是堆内内存。
+    文件句柄、mutex、堆外内存（off-heap memory，不被GC管理的内存）都是。
+    所以才有Java的try-with-resource statement和Go的defer statement。
+}
+
+\begin{frame}[fragile]
+    \frametitle{C++: Move Semantics}
+    \begin{block}{API side}
+        \begin{cppcode}
+            struct T {
+                T(T&&); // move ctor
+                T& operator=(T&&); // move assign
+            };
+        \end{cppcode}
+    \end{block}
+    \begin{block}{Usage}
+        \begin{cppcode}
+            T a = ...;
+            T x(std::move(a));
+            T b = ...;
+            T y;
+            y = std::move(b);
+        \end{cppcode}
+    \end{block}
+\end{frame}
+
+\note[itemize]{
+\item C++ std规定了什么时候应用move semantics。
+    太复杂了，大家自己看书去。
+    我自己是记不住的，一律std::move。
+    顺便也在使用处留一个visual marker。
+}
+
+\subsection{RVO: Revisited}
+
+\begin{frame}[fragile]
+    \frametitle{RVO: revisited}
+    \begin{cppcode}
+        T g(T x) {
+            T y = do_something(x);
+            return y;
+        }
+    \end{cppcode}
+\end{frame}
+
+\note[itemize]{
+\item C++ std规定，编译器实现可以做RVO，也可以将y move到return value。
+}
+
+\begin{frame}[fragile]
+    \frametitle{RVO: revisited}
+    \begin{cppcode}
+        T g(T x) {
+            T y;
+            T z;
+            while(...) {
+                // do something to y
+                // do other things to z
+                if (...) {
+                    return y;
+                } else {
+                    return z;
+                }
+            }
+        }
+    \end{cppcode}
+\end{frame}
+
+\note[itemize]{
+\item 像这种情况，编译器比较难判断是否可以RVO。
+    那么遵照标准，编译器可以实现成在return处move。
+}
+
+\subsection{Rules}
+
+\begin{frame}
+    \frametitle{C++: Move Semantics}
+    \begin{alertblock}{rules}
+    \begin{itemize}
+        \item 移动之后的对象只能析构，不能做任何事情！
+        \item 鼓励所有的类都实现move semantics。
+        \item 只要涉及所有权的转移，接收方只接受对象。
+            不要引用，不要裸指针。
+            反之亦然。
+    \end{itemize}
+    \end{alertblock}
+\end{frame}
+
+\note[itemize]{
+\item 智能指针是对象。
+    智能指针虽然有“指针”之名，其实和裸指针有语义上的不同。
+    \begin{itemize}
+    \item 裸指针：我指向一片内存，那里有个对象。
+    \item 智能指针：堆上有个对象，可以从我这里取用。
+    \end{itemize}
+\item 第一条规则其实很难做到。
+    C++标准里补充规定了标准库的实现，在move之后回到默认构造的状态。
+    这一条充分说明了C++程序员有多不靠谱。
+    所以留下visual marker非常重要。
+\item 第二条规则一般不难做到，但很容易忘记。
+    我自己也经常忘。
+\item 那么，Rust怎么处理这两条规则的呢？
+}
+
+\section{Move Semantics in Rust}
+
+\begin{frame}[fragile]
+    \frametitle{Move Semantics in Rust}
+    \begin{block}{~}
+        \begin{rustcode}
+            fn g<T>(x: T) -> T {
+                // do something on `x`
+            }
+
+            fn f() {
+                let a = g(T::default());
+                let b = a;
+                // `a` 一般不能再用
+            }
+        \end{rustcode}
+    \end{block}
+\end{frame}
+
+\note[itemize]{
+\item 编译器禁止move后使用。
+\item move=memcpy。
+    编译器给出默认move ctor/assignment。
+    不需要用户自己实现，因此也就不会忘实现。
+    本来无一物，何处染尘埃。
+}
+
+\begin{frame}[fragile]
+    \frametitle{Move Semantics in Rust}
+    \begin{block}{Self-referential objects}
+        \begin{rustcode}
+            struct T {
+                value: i64,
+                ptr: *const i64, // refer to `self::value`
+            }
+        \end{rustcode}
+    \end{block}
+\end{frame}
+
+\note[itemize]{
+\item 当一个对象被move(memcpy到另一片内存)后，value没问题，但ptr指向老的内存。
+    为了避免由此引入的unsafety，程序员需要告诉编译器：这个类的对象统统不允许move。
+\item 实际上，这类对象一般在堆上分配。
+    用的时候都会裹上一个智能指针。
+    而这个智能指针是可以move的。
+    也就是说，库作者注意注意就可以了，用户不会有什么不适。
+\item 我个人更喜爱rust的设计。
+    C++延续了copy ctor/assign的一贯设计。
+    给我的感觉是，解决了一个问题，好像又没完全解决。
+}
+
+\begin{frame}[plain]
+    \begin{center}
+        \includegraphics{pics/secret_kungfu.jpg}
+    \end{center}
+\end{frame}
+
+\end{document}
