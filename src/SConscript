@@ -4,5 +4,6 @@ Import('env')
 pdf = [
     env.beamer('lesson1.tex'),
     env.beamer('lesson2.tex'),
+    env.beamer('lesson3.tex'),
 ]
 env.Default(pdf)

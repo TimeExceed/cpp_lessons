@@ -1,0 +1,797 @@
+\documentclass[UTF8,lualatex]{ctexbeamer}
+\usepackage{tabu}
+\usepackage{amsmath}
+\usepackage{graphicx}
+\usepackage{minted}
+
+\usetheme{Frankfurt}
+\setbeamertemplate{note page}[plain]
+% $BEAMER_NOTES
+
+\title{\kaishu Modern C++ and Beyond\\
+    第三课：原子变量与内存模型}
+    \author{陶大}
+    \date{2022年7月}
+
+\newminted{cpp}{autogobble}
+
+\renewcommand{\emph}[1]{\textbf{#1}}
+
+\begin{document}
+\songti
+
+\begin{frame}[plain]
+    \titlepage
+\end{frame}
+
+\begin{frame}[plain]
+    \begin{center}
+        \includegraphics[height=.8\textheight]{pics/kungfu_category.jpg}
+    \end{center}
+\end{frame}
+
+\begin{frame}[plain]
+    \tableofcontents
+\end{frame}
+
+\section{Atomics}
+
+\begin{frame}
+    \frametitle{Atomics}
+    \begin{block}{原子变量是什么？}
+        \begin{itemize}
+            \item 原子变量是可以跨线程共享的变量
+        \end{itemize}
+    \end{block}
+\end{frame}
+
+\note[itemize]{
+\item 既然有可以，自然有不可以。
+    下面是一个例子。
+}
+
+\begin{frame}[fragile,t]
+    \frametitle{Atomics}
+    \begin{alertblock}{Question}
+        \begin{itemize}
+            \item 线程1会退出吗？
+        \end{itemize}
+    \end{alertblock}
+    \begin{exampleblock}{~}
+        \begin{cppcode}
+            static bool sExit = false;
+        \end{cppcode}
+    \end{exampleblock}
+    \begin{columns}[t]
+        \begin{column}{.45\textwidth}
+            \begin{exampleblock}{线程1}
+                \begin{cppcode}
+                    for(;;) {
+                        if (sExit) break;
+                        ...
+                    }
+                \end{cppcode}
+            \end{exampleblock}
+        \end{column}
+        \begin{column}{.45\textwidth}
+            \begin{exampleblock}{线程2}
+                \begin{cppcode}
+                    ...
+                    sExit = true;
+                    ...
+                \end{cppcode}
+            \end{exampleblock}
+        \end{column}
+    \end{columns}
+\end{frame}
+
+\note[itemize]{
+\item 线程这个概念留到下次课程再详细解释。
+    这里先认为同时运行在不同的核上的代码。
+\item 这个用法很常见。泽坤不久前刚见过。犯的错误也类似。
+\item 答案是：随缘。
+    这里的关键是线程2对sExit的修改，线程1能不能看到。
+    具体来讲，又有两段：
+    \begin{enumerate}
+        \item 线程2对sExit的修改，别的线程能否看到？
+        \item 线程1会不会去看sExit的修改？
+    \end{enumerate}
+    编译器有可能将sExit缓存到寄存器上，CPU也可能将sExit留在某层cache上。
+    总之，caching既可能挡住写，也可能挡住读。
+    而无论写还是读被挡住，线程1都不会退出。
+}
+
+\begin{frame}[fragile,t]
+    \frametitle{Atomics}
+    \begin{alertblock}{Question}
+        \begin{itemize}
+            \item 线程1会退出吗？
+        \end{itemize}
+    \end{alertblock}
+    \begin{exampleblock}{~}
+        \begin{cppcode}
+            static volatile bool sExit = false;
+        \end{cppcode}
+    \end{exampleblock}
+    \begin{columns}[t]
+        \begin{column}{.45\textwidth}
+            \begin{exampleblock}{线程1}
+                \begin{cppcode}
+                    for(;;) {
+                        if (sExit) break;
+                        ...
+                    }
+                \end{cppcode}
+            \end{exampleblock}
+        \end{column}
+        \begin{column}{.45\textwidth}
+            \begin{exampleblock}{线程2}
+                \begin{cppcode}
+                    ...
+                    sExit = true;
+                    ...
+                \end{cppcode}
+            \end{exampleblock}
+        \end{column}
+    \end{columns}
+\end{frame}
+
+\note[itemize]{
+\item 加上volatile，结果就对了。
+    volatile的本意是用于设备-内存映射。
+    自然就有了no-caching的语义。
+\item 然而，一个地方“对”不意味着generally “对”。
+\item Java的volatile是另外一回事。
+}
+
+\begin{frame}[fragile,t]
+    \frametitle{Atomics}
+    \begin{alertblock}{Question}
+        线程1的x有几个可能的值？
+        \begin{itemize}
+            \item $\{1,2\}$、$\{3,4\}$、$\{3,2\}$、$\{1,4\}$
+        \end{itemize}
+    \end{alertblock}
+    \begin{exampleblock}{~}
+        \begin{cppcode}
+            struct S{int a, b;};
+            static volatile S s = {1, 2};
+        \end{cppcode}
+    \end{exampleblock}
+    \begin{columns}
+        \begin{column}{.45\textwidth}
+            \begin{exampleblock}{线程1}
+                \begin{cppcode}
+                    S x = s;
+                \end{cppcode}
+            \end{exampleblock}
+        \end{column}
+        \begin{column}{.45\textwidth}
+            \begin{exampleblock}{线程2}
+                \begin{cppcode}
+                    s = S{3, 4};
+                \end{cppcode}
+            \end{exampleblock}
+        \end{column}
+    \end{columns}
+\end{frame}
+
+\note[itemize]{
+\item 答案是都有可能。
+    \begin{itemize}
+        \item 前两个比较容易想到：线程1先读线程2后写，和线程2先写再线程1读。
+        \item $\{3,2\}$：线程2刚写了$s.a=3$，还没来得及写$s.b=4$，就被线程1读走。
+        \item $\{1,4\}$：编译器或CPU（的多发射机制）认为修改$s.a$和修改$s.b$没有依赖，
+            所以做了指令reordering。
+            于是先写$s.b$再写$s.a$，并且恰好在半道上被线程1读走了。
+    \end{itemize}
+\item 做实验可能做不出来。
+    因为各个CPU以及编译器的具体机制有差异。
+    大家理解意思就好。
+}
+
+\begin{frame}[fragile,t]
+    \frametitle{Atomics}
+    \begin{alertblock}{Question}
+        线程1的x有几个可能的值？
+        \begin{itemize}
+            \item $\{1,2\}$、$\{3,4\}$
+        \end{itemize}
+    \end{alertblock}
+    \begin{exampleblock}{~}
+        \begin{cppcode}
+            struct S{int a, b;};
+            static atomic<S> s = {1, 2};
+        \end{cppcode}
+    \end{exampleblock}
+    \begin{columns}
+        \begin{column}{.45\textwidth}
+            \begin{exampleblock}{线程1}
+                \begin{cppcode}
+                    S x = s.load();
+                \end{cppcode}
+            \end{exampleblock}
+        \end{column}
+        \begin{column}{.45\textwidth}
+            \begin{exampleblock}{线程2}
+                \begin{cppcode}
+                    s.store(S{3, 4});
+                \end{cppcode}
+            \end{exampleblock}
+        \end{column}
+    \end{columns}
+\end{frame}
+
+\note[itemize]{
+\item 正如其名字，atomic保证了读写的原子性。
+}
+
+\begin{frame}[fragile,t]
+    \frametitle{Atomics}
+    \footnotesize
+    \begin{block}{fetch-and-X}
+        \begin{cppcode}
+            atomic<int64_t> s(0);
+            auto r = s.fetch_add(1);
+            // r=0, s=1
+            auto r = s.exchange(10);
+            // r=1, s=10
+        \end{cppcode}
+    \end{block}
+    \begin{block}{compare-and-set, CAS}
+        \begin{cppcode}
+            atomic<int64_t> s(0);
+            auto r = s.compare_exchange_strong(0, 10);
+            // r=true, s=10
+        \end{cppcode}
+    \end{block}
+\end{frame}
+
+\note[itemize]{
+\item 对于整数原子变量，现代CPU还提供了一套原子指令，以便在无锁的条件下保证原子语义。
+    除了load/save，还有FAA（包括减法和位运算）和CAS。
+\item 有了这些，就可以实现锁和各种同步语义，甚至专为高并发访问设计的lock-free data structures。
+}
+
+\section{Memory Ordering}
+
+\begin{frame}
+    \frametitle{What is memory-ordering?}
+    \begin{block}{}
+        \begin{center}
+            \includegraphics[width=\textwidth]{pics/memory-ordering.png}
+        \end{center}
+    \end{block}
+\end{frame}
+
+\begin{frame}[fragile]
+    \frametitle{Critical zone}
+    \scriptsize
+    \begin{columns}
+        \begin{column}{.8\textwidth}
+            \begin{block}{~}
+                \begin{cppcode}
+                    using namespace std;
+
+                    std::mutex g_num_mutex;
+                    int g_num = 0;  // protected by g_num_mutex
+
+                    void slow_increment(int id) {
+                        for (int i = 0; i < 3; ++i) {
+                            g_num_mutex.lock();
+                            ++g_num;
+                            // note, that the mutex also syncronizes the output
+                            cout << "id: " << id
+                                << ", g_num: " << g_num << '\n';
+                            g_num_mutex.unlock();
+
+                            this_thread::sleep_for(chrono::milliseconds(234));
+                        }
+                    }
+                    int main() {
+                        std::thread t1{slow_increment, 0};
+                        std::thread t2{slow_increment, 1};
+                        t1.join(); t2.join();
+                    }
+                \end{cppcode}
+            \end{block}
+        \end{column}
+        \begin{column}{.2\textwidth}
+            \begin{block}<1>{possible output}
+                \begin{minted}[autogobble]{text}
+                    id: 0, g_num: 1
+                    id: 1, g_num: 2
+                    id: 1, g_num: 3
+                    id: 0, g_num: 4
+                    id: 0, g_num: 5
+                    id: 1, g_num: 6
+                \end{minted}
+            \end{block}
+            \begin{alertblock}{Question}
+                锁如何做到临界区的互斥性保证？
+            \end{alertblock}
+        \end{column}
+    \end{columns}
+\end{frame}
+
+\note[itemize]{
+\item 因为锁的作用，g\_num的那列一定单调增。
+\item 要做到临界区的互斥性保证，
+    并且我们注意到临界区里都是普通指令。
+    要点有二：
+    \begin{enumerate}
+        \item 能够标记争抢临界区的线程。
+        \item 临界区里的代码不可以reorder到临界区外。
+    \end{enumerate}
+    第二条就是memory order的意义。
+    第一条既可以借用OS的线程调度器，也可以使用原子变量的FAA/CAS指令来做到。
+\item 指令的reordering，可能是编译器的优化，也可能是CPU的决策（多发射）。
+    因此，memory ordering必须使用编译器提供的库，不可以自己去写汇编。
+}
+
+\subsection{relaxed}
+
+\begin{frame}[fragile]
+    \frametitle{Memory ordering}
+    \begin{block}{relaxed}
+        \footnotesize
+        \begin{cppcode}
+            std::atomic<int> cnt = {0};
+            void f() {
+                for (int n = 0; n < 1000; ++n) {
+                    cnt.fetch_add(1, std::memory_order_relaxed);
+                }
+            }
+            int main() {
+                std::vector<std::thread> v;
+                for (int n = 0; n < 10; ++n) {v.emplace_back(f);}
+                for (auto& t : v) {t.join();}
+                std::cout << cnt << '\n'; // 10000
+            }
+        \end{cppcode}
+    \end{block}
+\end{frame}
+
+\note[itemize]{
+\item relaxed不禁止任何reordering。
+\item relaxed和普通读写的区别：relaxed保证最终一致性。
+    即，任何写最终都会被读到，任何线程最终会读到最新的值。
+\item relaxed和volatile的区别：relaxed不保证每次读写都穿透。
+    即，具体一次写完之后别的线程未必能马上读到。
+    所以relaxed比volatile更快。
+}
+
+\subsection{sequentially consistent}
+
+\begin{frame}[fragile]
+    \frametitle{Memory ordering: sequentially consistent}
+    \scriptsize
+    \begin{cppcode}
+        std::atomic<bool> x = {false};
+        std::atomic<bool> y = {false};
+        std::atomic<int> z = {0};
+    \end{cppcode}
+
+    \begin{columns}
+        \begin{column}{.5\textwidth}
+            \begin{block}{线程1}
+                \begin{cppcode}
+                    x.store(true, memory_order_seq_cst);
+                \end{cppcode}
+            \end{block}
+        \end{column}
+        \begin{column}{.5\textwidth}
+            \begin{block}{线程2}
+                \begin{cppcode}
+                    y.store(true, memory_order_seq_cst);
+                \end{cppcode}
+            \end{block}
+        \end{column}
+    \end{columns}
+    \begin{columns}
+        \begin{column}{.5\textwidth}
+            \begin{block}{线程3}
+                \begin{cppcode}
+                    while(!x.load(memory_order_seq_cst));
+                    if(y.load(memory_order_seq_cst))
+                    {
+                        z.fetch_add(1);
+                    }
+                \end{cppcode}
+            \end{block}
+        \end{column}
+        \begin{column}{.5\textwidth}
+            \begin{block}{线程4}
+                \begin{cppcode}
+                    while(!y.load(memory_order_seq_cst));
+                    if(x.load(memory_order_seq_cst))
+                    {
+                        z.fetch_add(1);
+                    }
+                \end{cppcode}
+            \end{block}
+        \end{column}
+    \end{columns}
+
+    \begin{cppcode}
+        assert(z.load() > 0);
+    \end{cppcode}
+\end{frame}
+
+\note[itemize]{
+\item x,y是两个变量，虽然它们各自的读写都是原子的，但整体并不原子。
+    所以有可能线程3看到x=true,y=false，而线程4看到x=false,y=true。
+    为了强制所有线程看到相同的写的顺序，就需要线性一致性。
+}
+
+\subsection{release-acquire}
+
+\begin{frame}[fragile]
+    \frametitle{Memory order: release-acquire}
+    \scriptsize
+    \begin{columns}
+        \begin{column}{.5\textwidth}
+            \begin{block}{线程1}
+                \begin{cppcode}
+                    string* p = new string("Hello");
+                    data = 42;
+                    ptr.store(p, memory_order_release);
+                \end{cppcode}
+            \end{block}
+            \begin{block}{线程3}
+                \begin{cppcode}
+                    string* p2;
+                    while(!(p2 = ptr.load(
+                        memory_order_relaxed)));
+                    assert(*p2 == "Hello");
+                    cout << data << endl; // 可能不是42
+                \end{cppcode}
+            \end{block}
+        \end{column}
+        \begin{column}{.5\textwidth}
+            \begin{block}{线程2}
+                \begin{cppcode}
+                    string* p2;
+                    while(!(p2 = ptr.load(
+                        memory_order_acquire)));
+                    assert(*p2 == "Hello");
+                    assert(data == 42);
+                \end{cppcode}
+            \end{block}
+        \end{column}
+    \end{columns}
+\end{frame}
+
+\note[itemize]{
+\item release-acquire的名字来源于锁。
+    \begin{itemize}
+        \item acquire是加锁。之后的指令不可以reorder到前面。
+        \item release是放锁。之前的指令不可以reorder到后面。
+    \end{itemize}
+}
+
+\begin{frame}
+    \frametitle{Memory order: release-acquire}
+    \begin{block}{架构}
+        \includegraphics[width=\textwidth]{pics/store-buffer_invalidate-queue.png}
+    \end{block}
+\end{frame}
+
+\note[itemize]{
+\small
+\item 这张图是我根据多种资料综合出来的，并没有在别处看到过。
+    有可能含有错误。
+    也可能过于简化，比如NUMA、L2/L3 cache这里都没有谈。
+\item 内存上的数据是ground truth。
+    读路径上如果L1 cache上没有就会去内存上读。
+\item 在写路径上，CPU core定期将L1 cache上修改过的数据刷回内存。
+    由于L1 cache比内存快得多，所以先在store buffer上暂存一下。
+    \begin{itemize}
+        \item release memory-order在实现上就是等待store buffer排空。
+            所以即使临界区里都是普通访存指令，出了临界区之后也都到内存上去了，
+            从而能被所有线程所感知。
+    \end{itemize}
+\item L1 cache在写回内存的同时，也会通知其他CPU core：
+    这块内存被我修改过了，你们如果缓存了，麻烦重新读一下。
+    其他CPU core如果没有缓存过这片内存，自然忽略即可；
+    如果缓存过了，也不会马上去读内存，而是将缓存标记成invalidated。
+    这个协议就是MESI。
+    \begin{itemize}
+        \item MESI总线并不以CPU core相同的频率工作。
+            事实上，由于大小核、节能降频等原因，各个CPU core也并不总是工作在同一个频率上。
+            因此有invalidate queue来协调异步电路。
+        \item acquire memory-order在实现上就是等待invalidate queue排空。
+            在此之后，即使普通访存指令也能保证读到内存上最新的数据。
+    \end{itemize}
+}
+
+\section{An Exercise: Spin Lock}
+
+\begin{frame}
+    \frametitle{同步抽象}
+    \begin{block}{~}
+        \begin{itemize}
+            \item Low level: mutex/lock, semaphore, condition variable
+            \item Mid level: multi/single-producer multi/single-consumer queue, broadcast
+            \item High level: software/hardware transactional memory
+        \end{itemize}
+    \end{block}
+\end{frame}
+
+\note[itemize]{
+\item 关于transactional memory以后有机会再讲。
+    我们这次来讲讲怎么用原子变量写一个spin lock。
+\item 我们讲自旋锁，不是让大家都去用自旋锁，或者自己去写一个。
+    一般来讲，现代操作系统提供的锁适用的环境更广。
+}
+
+\subsection{Test-and-Set}
+
+\begin{frame}[fragile]
+    \frametitle{Spin Lock: Test-and-Set}
+    \scriptsize
+    \begin{block}{数据成员}
+        \begin{cppcode}
+            class SpinLock {
+                std::atomic<bool> mtx;
+            };
+        \end{cppcode}
+    \end{block}
+    \begin{columns}[t]
+        \begin{column}{.5\textwidth}
+            \begin{block}{~}
+                \begin{cppcode}
+                    void SpinLock::lock() {
+                        while(mtx.exchange(
+                            true,
+                            memory_order_acquire));
+                    }
+                \end{cppcode}
+            \end{block}
+        \end{column}
+        \begin{column}{.5\textwidth}
+            \begin{block}{~}
+                \begin{cppcode}
+                    void SpinLock::unlock() {
+                        mtx.store(false,
+                            memory_order_release);
+                    }
+                \end{cppcode}
+            \end{block}
+        \end{column}
+    \end{columns}
+\end{frame}
+
+\note[itemize]{
+\item 正确性没问题。
+\item 问题是慢。lock()每循环一次都要去争抢内存总线。
+    好不容易抢到了一看已经被人占了临界区，自己只能退出重新抢。
+}
+
+\subsection{Test-Test-and-Set}
+
+\begin{frame}[fragile]
+    \frametitle{Spin Lock: Test-Test-and-Set}
+    \scriptsize
+    \begin{block}{数据成员}
+        \begin{cppcode}
+            class SpinLock {
+                std::atomic<bool> mtx;
+            };
+        \end{cppcode}
+    \end{block}
+    \begin{columns}[t]
+        \begin{column}{.5\textwidth}
+            \begin{block}{~}
+                \begin{cppcode}
+                    void SpinLock::lock() {
+                        for(;;) {
+                            for(; mtx.load(
+                                memory_order_relaxed););
+                            if (!mtx.exchange(true,
+                                memory_order_acquire))
+                            {
+                                break;
+                            }
+                        }
+                    }
+                \end{cppcode}
+            \end{block}
+        \end{column}
+        \begin{column}{.5\textwidth}
+            \begin{block}{~}
+                \begin{cppcode}
+                    void SpinLock::unlock() {
+                        mtx.store(false,
+                            memory_order_release);
+                    }
+                \end{cppcode}
+            \end{block}
+        \end{column}
+    \end{columns}
+\end{frame}
+
+\note[itemize]{
+\item lock()里面一开始用relaxed load先排除掉一部分抢锁的线程，使得对总线的争抢降下来。
+    于是性能就涨上去。
+}
+
+\subsection{Randomized Exponential Backoff}
+
+\begin{frame}[fragile]
+    \frametitle{Spin Lock: Randomized Exponential Backoff}
+    \scriptsize
+    \begin{block}{Randomized Exponential Backoff}
+        \begin{cppcode}
+            void SpinLock::lock() {
+                int limit = 100;
+                for(;mtx.exchange(true, memory_order_acquire);) {
+                    limit = min(limit * 2, max_backoff);
+                    int backoff = ... // random between limit/2 and limit
+                    this_thread::sleep_for(chrono::microseconds(backoff));
+                }
+            }
+
+            void SpinLock::unlock() {
+                mtx.store(false,
+                    memory_order_release);
+            }
+        \end{cppcode}
+    \end{block}
+\end{frame}
+
+\note[itemize]{
+\item 别小看randomized exponential backoff，能正确实现的工程师不多。
+    AWS DynamoDB的官网上给的样例就是错的。
+    它写的是先randomize，再exp backoff。
+}
+
+\begin{frame}
+    \frametitle{Spin Lock: Randomized Exponential Backoff}
+    \begin{center}
+        假设初始limit为10ms，临界区耗时1ms，有100个线程抢锁。
+    \end{center}
+    \begin{columns}[t]
+        \begin{column}{.5\textwidth}
+            \begin{exampleblock}{$\surd$}
+                每次limit翻倍，实际退避时间在limit/2到limit之间随机。
+                \begin{enumerate}
+                    \item 第一轮：一个线程抢到锁，其余线程退避。
+                    \item 第二轮：5个线程抢到锁。
+                    \item 第三轮：10个线程抢到锁。
+                    \item $\cdots$
+                \end{enumerate}
+                最多需要6轮，合计耗时310ms。
+            \end{exampleblock}
+        \end{column}
+        \begin{column}{.5\textwidth}
+            \begin{alertblock}{$\times$}
+                在limit之内取随机，然后每次对这个随机数翻倍。
+                \begin{enumerate}
+                    \item 第一轮：一个线程抢到锁，其余线程退避。
+                    \item 第二轮：10个线程抢到锁。
+                    \item 第三轮：10个线程抢到锁。
+                    \item $\cdots$
+                \end{enumerate}
+                最多需要10轮，合计耗时$>$10s。
+            \end{alertblock}
+        \end{column}
+    \end{columns}
+\end{frame}
+
+\note[itemize]{
+\item 为什么是[limit/2, limit]呢？
+    防止前一轮的线程来踩这一轮的线程造成长尾。
+\item REB方法的问题在于最后一轮会有长尾。
+    最后一轮的线程躺平的时间长，而一般最后一轮资源也没有很忙。
+\item 这个问题的关键：REB假设线程除了资源忙闲这样一个boolean information之外什么都不知道。
+    好处是适用范围广，尤其是在分布式环境下，几乎什么都不需要改造。
+}
+
+\subsection{CLH}
+
+\begin{frame}[fragile]
+    \frametitle{Spin Lock: CLH}
+    \scriptsize
+    \begin{block}{~}
+        \begin{cppcode}
+            struct SpinLock {
+                atomic<atomic<bool*> mtx;
+                SpinLock()
+                :   mtx(new atomic<bool>(false)) {}
+            }
+
+            atomic<bool>* SpinLock::lock() {
+                atomic<bool>* mine = new atomic<bool>(true);
+                atomic<bool>* other = mtx.exchange(mine, memory_order_relaxed);
+                for(;;) {
+                    for(; other->load(memory_order_relaxed););
+                    if (!other->load(memory_order_acquire)) {
+                        break;
+                    }
+                }
+            }
+
+            void SpinLock::unlock(atomic<bool>* mine) {
+                mine->store(false, memory_order_release);
+            }
+        \end{cppcode}
+    \end{block}
+\end{frame}
+
+\begin{frame}[t]
+    \frametitle{Spin Lock: CLH}
+    \begin{onlyenv}<1>
+        \includegraphics[scale=0.8]{pics/clh_0.png}
+    \end{onlyenv}
+    \begin{onlyenv}<2>
+        \includegraphics[scale=0.8]{pics/clh_1.png}
+    \end{onlyenv}
+    \begin{onlyenv}<3>
+        \includegraphics[scale=0.8]{pics/clh_2.png}
+    \end{onlyenv}
+    \begin{onlyenv}<4>
+        \includegraphics[scale=0.8]{pics/clh_3.png}
+    \end{onlyenv}
+    \begin{onlyenv}<5>
+        \includegraphics[scale=0.8]{pics/clh_4.png}
+    \end{onlyenv}
+    \begin{onlyenv}<6>
+        \includegraphics[scale=0.8]{pics/clh_5.png}
+    \end{onlyenv}
+\end{frame}
+
+\note[itemize]{
+\item 初始状态，mtx指向绿色的false。
+\item 然后线程1进来抢锁。
+    它把自己new出来的蓝色的true和mtx所指向交换。
+    它看换过来的atomic bool中的值，是false，自己抢到锁。
+\item 然后线程2进来抢锁。
+    它把自己new出来的橙色的true和mtx所指向交换。
+    它看换过来的atomic bool中的值，是true，自己没抢到锁，门口等着。
+\item 这时候线程1放锁。
+    它把自己new出来的蓝色的atomic bool置上false。
+    然后线程2看到了这个false，自己抢到锁了，开始干活。
+\item CLH本质上是把争锁的线程串成了一个队列。
+    持锁线程一旦放锁，只有排在它后面的那个线程得到通知。
+    而不是“秦失其鹿，天下共逐之”。
+\item 但是CLH队列是以死循环的方式等锁。
+    大家会看到CPU飙得很高，非常不环保。
+    而标准库提供的锁spin几轮之后会等在操作系统调度子系统的waiting队列里。
+}
+
+\begin{frame}[plain]
+    \begin{center}
+        \includegraphics{pics/secret_kungfu.jpg}
+    \end{center}
+\end{frame}
+
+\note[itemize]{
+\item 我们今天讲C++的多线程。
+    然而我们今天没讲多少C++，我们讲了组成原理。
+\item 我们讲了原子性、指令乱序。
+    我们还讲了volatitle不能用于线程同步。
+\item 我们讲了三种内存模型。
+    我们还讲了MESI架构。
+\item 我们以spin lock为例讲了怎么使用原子变量。
+    过程中我们知道，多线程系统里、分布式系统里，争抢是性能的关键。
+    我们还讲了应该如何做随机指数退避。
+}
+
+
+\begin{frame}
+    \frametitle{References}
+    \begin{itemize}
+        \item Spin Locks and Contention by G.\ Kalinski
+        \item The Problem with Threads by E.\ A.\ Lee
+        \item Time, Clocks and The Ordering of Events in A Distributed System by Lamport
+    \end{itemize}
+\end{frame}
+
+\note[itemize]{
+\item 现代体系结构里面，分布式系统无处不在。
+    我认为分布式系统的核心是在本质不确定的环境里构建某种程度的确定性。
+    这里面最重要的确定性是因果关系。
+}
+
+\end{document}

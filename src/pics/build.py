@@ -74,6 +74,13 @@ if __name__ == '__main__':
         'build-files.py',
         'stack0.py',
         'stack1.py',
+        'store-buffer_invalidate-queue.py',
+        'clh_0.py',
+        'clh_1.py',
+        'clh_2.py',
+        'clh_3.py',
+        'clh_4.py',
+        'clh_5.py',
     ]
     figure_srcs = [Path(x) for x in figure_srcs]
     figure_dsts = [to_figure_path(x) for x in figure_srcs]
