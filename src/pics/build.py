@@ -43,7 +43,7 @@ def save_digests(digests):
     for k, v in digests:
         res[str(k)] = v
     with open(DIGESTS_FILE, 'w') as fp:
-        json.dump(res, fp)
+        json.dump(res, fp, indent=2)
 
 def recover_digests():
     if DIGESTS_FILE.exists():

@@ -1,0 +1,901 @@
+\documentclass[UTF8,lualatex]{ctexbeamer}
+\usepackage{tabu}
+\usepackage{amsmath}
+\usepackage{graphicx}
+\usepackage{minted}
+
+\usetheme{Frankfurt}
+\setbeamertemplate{note page}[plain]
+% $BEAMER_NOTES
+
+\title{\kaishu Modern C++ and Beyond\\
+    第四课：并行计算模型、线程与线程池}
+    \author{陶大}
+    \date{2022年8月}
+
+\newminted{cpp}{autogobble}
+
+\renewcommand{\emph}[1]{\textbf{#1}}
+
+\begin{document}
+\songti
+
+\begin{frame}[plain]
+    \titlepage
+\end{frame}
+
+\begin{frame}[plain]
+    \begin{center}
+        \includegraphics[height=.8\textheight]{pics/kungfu_category.jpg}
+    \end{center}
+\end{frame}
+
+\begin{frame}[plain]
+    \tableofcontents
+\end{frame}
+
+\section{Something happens concurrently}
+
+\subsection{Physical Thread}
+
+\begin{frame}[fragile]
+    \frametitle{What is thread?}
+    \begin{columns}[t]
+        \begin{column}{.5\textwidth}
+            \begin{block}{Logical}
+                \begin{itemize}
+                    \item Something happens concurrently.
+                    \item Something is required in the future.
+                \end{itemize}
+            \end{block}
+        \end{column}
+        \begin{column}{.5\textwidth}
+            \begin{block}{Physical}
+                \begin{itemize}
+                    \item A set of kernel-scheduled entities share a same memory space.
+                \end{itemize}
+            \end{block}
+        \end{column}
+    \end{columns}
+    \begin{exampleblock}{std::thread}
+        \scriptsize
+        \begin{cppcode}
+            #include <thread>
+
+            std::thread j1([](){
+                std::cout << "haha" << std::endl;
+            });
+            j1.join();
+        \end{cppcode}
+    \end{exampleblock}
+\end{frame}
+
+\note[itemize]{
+\item 今天这一讲，第一个主题就是，我们在讲线程时，究竟在谈论什么。
+\item 关于线程，有三个既相互独立又紧密相关的观念。
+    其中physical thread可以视作concurrency观念的某种实现。
+}
+
+\begin{frame}
+    \frametitle{Physical Thread}
+    \begin{center}
+        \includegraphics[height=.8\textheight]{pics/virtual_mem.png}
+    \end{center}
+\end{frame}
+
+\note[itemize]{
+\item 经典的虚拟内存布局。
+    需要指出的是，线程栈eager分配内存。
+    也就是说，有一个线程就有固定大小的物理内存被占掉。
+    线程栈的大小和具体的系统有关。
+    linux平台上可以通过ulimit查看。
+    一般默认8MB。
+\item 所以，有点什么事情就起个物理线程去做是很扯淡的。
+    主要是内存吃不消。
+    我在阿里云见过4K多线程，直接32GB内存就没了，还什么事情都没做呢。
+}
+
+\subsection{Thread Pool and Tasks}
+
+\begin{frame}[fragile]
+    \frametitle{Thread Pool and Tasks}
+    \scriptsize
+    \begin{columns}
+        \begin{column}{.5\textwidth}
+            \begin{exampleblock}{physical thread}
+                \begin{cppcode}
+                    std::atomic<int> s_cnt;
+                    std::thread j1([](){
+                        s_cnt.fetch_add(1);
+                    });
+                    j1.join();
+                    assert(s_cnt.load() == 1);
+                \end{cppcode}
+            \end{exampleblock}
+        \end{column}
+        \begin{column}{.5\textwidth}
+            \begin{exampleblock}{thread pool}
+                \begin{cppcode}
+                    noodles::Noodles tp(8, 200);
+                    std::atomic<int> s_cnt;
+                    auto res = tp.submit([]() -> void {
+                        s_cnt.fetch_add(1);
+                    });
+                    res.wait();
+                    assert(s_cnt.load() == 1);
+                \end{cppcode}
+            \end{exampleblock}
+        \end{column}
+    \end{columns}
+\end{frame}
+
+\note[itemize]{
+\item 既然起物理线程代价有点大，很自然地，池化。
+    也就是说，把concurrently execution拆分成一个一个的tasks，然后提交给线程池。
+    把计算与其执行分开。
+\item 在这个简单case上，看起来和原先的用法没有体验上的区别。
+}
+
+\begin{frame}[fragile]
+    \frametitle{Thread Pool and Tasks}
+    \begin{columns}
+        \scriptsize
+        \begin{column}{.5\textwidth}
+            \begin{exampleblock}{physical thread}
+                \begin{cppcode}
+                    std::thread j1([](){
+                        ofstream f1("f1.txt");
+                        f1 << "haha" << endl;
+                    });
+                    j1.join();
+                \end{cppcode}
+            \end{exampleblock}
+        \end{column}
+        \begin{column}{.5\textwidth}
+            \begin{exampleblock}{thread pool}
+                \begin{cppcode}
+                    noodles::Noodles tp(8, 200);
+                    auto res = tp.submit([]() -> void {
+                        ofstream f1("f1.txt");
+                        f1 << "haha" << endl;
+                    });
+                    res.wait();
+                \end{cppcode}
+            \end{exampleblock}
+        \end{column}
+    \end{columns}
+    \begin{alertblock}<2>{~}
+        不要在线程池里做阻塞操作！
+    \end{alertblock}
+\end{frame}
+
+\note[itemize]{
+\item 在这个例子里，线程池的使用有点问题：阻塞地做IO。
+    线程池里的线程数量有限，用一根少一根。
+    如果这么搞，很快就没线程跑任务了，而外面看起来CPU并不高。
+}
+
+\begin{frame}[fragile]
+    \frametitle{Thread Pool and Tasks}
+    \begin{columns}[t]
+        \scriptsize
+        \begin{column}{.5\textwidth}
+            \begin{exampleblock}{bad example}
+                \begin{cppcode}
+                    mutex mtx;
+                    noodles::Noodles tp(8, 200);
+                    auto res = tp.submit([]() -> void {
+                        lock_guard<mutex> g(mtx);
+                        // do something
+                    });
+                    res.wait();
+                \end{cppcode}
+            \end{exampleblock}
+        \end{column}
+        \begin{column}{.5\textwidth}
+            \begin{exampleblock}{not-so-bad example}
+                \begin{cppcode}
+                    mutex mtx;
+
+                    void f(noodles::Noodles& tp) {
+                        if (mtx.try_lock()) {
+                            lock_guard<mutex> lock(
+                                mtx, adopt_lock);
+                            // do something
+                        } else {
+                            tp.submit([&]() {
+                                f(tp);
+                            })
+                        }
+                    }
+
+                    noodles::Noodles tp(8, 200);
+                    tp.submit([&]() {
+                        f(tp);
+                    });
+                \end{cppcode}
+            \end{exampleblock}
+        \end{column}
+    \end{columns}
+\end{frame}
+
+\note[itemize]{
+\item 右边的要点是检测资源的readiness。
+    若不就绪，则将自身再次提交给线程池。
+    由此便不会阻塞住工作线程。
+\item 但是整个事情还是不对。
+    检测资源的readiness既boring，又浪费CPU。
+    这个问题的根源，对比物理线程，在于线程池只对应计算，OS调度的那块没有对应物。
+}
+
+\subsection{Coroutine}
+
+\begin{frame}
+    \frametitle{Coroutine}
+    \begin{block}{~}
+        \begin{itemize}
+            \item 又名M:N thread, green thread, fiber
+            \item co代表cooperative
+        \end{itemize}
+    \end{block}
+\end{frame}
+
+\note[itemize]{
+\item 这里cooperative的意思是，执行流一直在一个logical thread上。
+    直到该logical thread \emph{主动} suspend到一个资源上去。
+}
+
+\begin{frame}[fragile]
+    \frametitle{Coroutine}
+    \begin{columns}[t]
+        \scriptsize
+        \begin{column}{.5\textwidth}
+            \begin{exampleblock}{physical thread}
+                \begin{cppcode}
+                    mutex mtx;
+                    thread t1([]() -> void {
+                        lock_guard<mutex> g(mtx);
+                        // do something
+                    });
+                \end{cppcode}
+            \end{exampleblock}
+        \end{column}
+        \begin{column}{.5\textwidth}
+            \begin{exampleblock}{coroutine}
+                \begin{cppcode}
+                    cppcoro::async_mutex mtx;
+
+                    cppcoro::task<> f() {
+                        auto lock = co_await
+                            mtx.scoped_lock_async();
+                        // do something
+                    }
+                \end{cppcode}
+            \end{exampleblock}
+        \end{column}
+    \end{columns}
+\end{frame}
+
+\note[itemize]{
+\item co\_await会将执行流切换到userspace scheduler。
+    由userspace scheduler做资源readiness检测。
+    当资源就绪，scheduler再把执行流切换回来。
+\item C++20 coroutine生态还非常原始。
+    比如async\_mutex的实现是TTAS。
+    相比Rust的tokio，简直就是那啥。
+}
+
+\begin{frame}
+    \frametitle{Coroutine}
+    \begin{block}{有栈 vs.\ 无栈}
+        \begin{itemize}
+            \item 有栈：兼容性好，切换代价比物理线程稍低
+            \item 无栈：性能最好，内存最省
+        \end{itemize}
+    \end{block}
+\end{frame}
+
+\note[itemize]{
+\item C++20之前的协程库基本都站有栈这边。
+    C++20之后的协程库、Rust, C\#, Python, JS都站无栈这边。
+    Golang比较鸡贼，它搞了一个 segmented stack。
+\item 有栈协程
+    \begin{itemize}
+        \item 因为它们有栈，因此理论上各种库（除了调用阻塞系统调用）、各种工具(perf/monitoring之类)都没什么问题。
+        \item 一般它们的栈是lazy分配，所以能解决一启动就吃大量物理内存的问题。
+            但是一旦一根协程碰过的内存是不会被其他人复用的。
+            即使后面缩回去了，也不会还给系统（这和gc还不一样）。
+            当然，有栈协程针对的场景是大量短命协程。
+            上述问题在这个场景里不严重。
+    \end{itemize}
+\item 无栈协程本质上是一个自动机。
+    \begin{itemize}
+        \item 一般需要在语言层面引入新的关键词。
+            因此，兼容性差些。
+        \item 也有不动语言的实现，比如tokio 0.x。
+            但是需要用户有更强的函数式编程的背景。
+    \end{itemize}
+}
+
+\subsection{Actor}
+
+\begin{frame}[fragile]
+    \frametitle{Actor}
+    \begin{block}{Actor}
+        每根协程搭配一个无限长队列
+    \end{block}
+    \begin{exampleblock}{Erlang Process}
+        \scriptsize
+        \begin{minted}[autogobble,linenos]{erlang}
+            loop() ->
+                receive
+                    {sys, Msg} ->
+                        handle_sys_msg(Msg),
+                        loop();
+                    {From, Msg} ->
+                        Reply = handle_msg(Msg),
+                        From ! Reply,
+                        loop()
+            end.
+        \end{minted}
+    \end{exampleblock}
+\end{frame}
+
+\note[itemize]{
+\item 今天工程上实际有人用的Actor model，著名的只有两个Erlang和Java Akka。
+    其中Erlang资格最老，设计也最干净。
+\item Erlang process名为process其实是协程。
+    每个Erlang process都配有一个无限长的队列，称为mailbox。
+    \begin{itemize}
+        \item 示例代码第3行的receive，是从自己的mailbox里拿一个message，然后处理。
+        \item 第8行的 \mintinline{erlang}|From ! Reply| 是向From所指的进程的mailbox里追加一条Reply所指的消息。
+    \end{itemize}
+\item Actor model最大的价值是，它其实是一个建模工具。
+    业务上会有大量的并发agent。
+    我们人类做工作就是大量个体依照制度、流程的约束并发地处理各自的任务。
+    作为建模工具，其原则是
+    \begin{center}
+        \emph{Communicate, not share!}
+    \end{center}
+\item 一个小练习： 如何用actor model实现mutex？
+\item Actor model在实践中有两个问题：
+    \begin{itemize}
+        \item 小问题：mailbox缺少流控。
+            内存容易打爆。
+        \item 大问题：整个系统完全都是分布式系统。
+            分布式系统开发难度更大，对开发者的技能要求更高。
+            虽然在现代系统架构里，分布式系统基本不可避免。
+    \end{itemize}
+}
+
+\subsection{CSP}
+
+\begin{frame}[fragile]
+    \frametitle{Communicating Sequential Process, CSP}
+    \begin{block}{Golang}
+        \scriptsize
+        \begin{minted}[autogobble,linenos]{golang}
+            func fibonacci(c, quit chan int) {
+                x, y := 0, 1
+                for {
+                    select {
+                    case c <- x:
+                        x, y = y, x+y
+                    case <-quit:
+                        return
+                    }
+                }
+            }
+            func main() {
+                c := make(chan int, 3)
+                quit := make(chan int, 1)
+                go func() {
+                    for i := 0; i < 10; i++ {fmt.Println(<-c)}
+                    quit <- 0
+                }()
+                fibonacci(c, quit)
+            }
+        \end{minted}
+    \end{block}
+\end{frame}
+
+\note[itemize]{
+\item Go是CSP的工业化语言的代表。
+\item 对开发者来讲，最重要的是，CSP和Actor model的哲学是一样的
+    \begin{center}
+        \emph{Communicate, not share!}
+    \end{center}
+    差异有两点比较重要：
+    \begin{itemize}
+        \item 有界队列(channel)
+        \item 单进程多队列
+    \end{itemize}
+}
+
+\section{Something is required in the future}
+
+\subsection{Future/Promise}
+
+\begin{frame}[fragile]
+    \frametitle{Future/Promise}
+    \scriptsize
+    \begin{columns}[t]
+        \begin{column}{.5\textwidth}
+            \begin{exampleblock}{future from a promise}
+                \begin{cppcode}
+                    std::promise<int> p;
+                    std::future<int> f = p.get_future();
+                    std::thread t(
+                        [&p]{ p.set_value(42); });
+                    t.join();
+                \end{cppcode}
+            \end{exampleblock}
+            \begin{exampleblock}{future from an async()}
+                \begin{cppcode}
+                    std::future<int> f = std::async(
+                        []{ return 42; });
+                \end{cppcode}
+            \end{exampleblock}
+        \end{column}
+        \begin{column}{.5\textwidth}
+            \begin{exampleblock}{future from a packaged task}
+                \begin{cppcode}
+                    std::packaged_task<int()> task(
+                        []{ return 42; });
+                    std::future<int> f = task.get_future();
+                    std::thread t(std::move(task));
+                    j.join();
+                \end{cppcode}
+            \end{exampleblock}
+        \end{column}
+    \end{columns}
+    \begin{block}{when the value is required}
+        \begin{cppcode}
+            f.wait();
+            std::cout << f.get() << std::endl;
+        \end{cppcode}
+    \end{block}
+\end{frame}
+
+\begin{frame}[fragile]
+    \frametitle{Future/Promise}
+    \scriptsize
+    \begin{columns}[t]
+        \begin{column}{.5\textwidth}
+            \begin{exampleblock}{future from an async()}
+                \begin{cppcode}
+                    future<int> f = std::async(
+                        launch::async | launch::deferred
+                        []{ return 42; });
+                \end{cppcode}
+            \end{exampleblock}
+        \end{column}
+        \begin{column}{.5\textwidth}
+            \begin{block}{when the value is required}
+                \begin{cppcode}
+                    f.wait();
+                    std::cout << f.get() << std::endl;
+                \end{cppcode}
+            \end{block}
+        \end{column}
+    \end{columns}
+\end{frame}
+
+\note[itemize]{
+\item Future，顾名思义，是未来要用的值。
+    \begin{itemize}
+        \item 在其依赖就绪的时候提交计算
+        \item 在需用的时候等待其值就绪
+    \end{itemize}
+    细究下来，有两种场景： async evalution 和 lazy evaluation，
+    分别对应lauch::async和lauch::deferred。
+}
+
+\begin{frame}[fragile]
+    \frametitle{作为抽象工具的lazy eval}
+    \scriptsize
+    \begin{columns}[t]
+        \begin{column}{.5\textwidth}
+            \begin{block}{~}
+                \begin{cppcode}
+                    auto start0 =
+                        chrono::steady_clock::now();
+                    // do some heavy things
+                    int x0 = calc0(...);
+                    auto end0 =
+                        chrono::steady_clock::now();
+                    cout << "get " << x0
+                        << " in " << (end0 - start0)
+                        << endl;
+
+                    auto start1 =
+                        chrono::steady_clock::now();
+                    // do some other heavy things
+                    int x1 = calc1(...);
+                    auto end1 =
+                        chrono::steady_clock::now();
+                    cout << "get " << x1
+                        << " in " << (end1 - start1)
+                        << endl;
+                \end{cppcode}
+            \end{block}
+        \end{column}
+        \begin{column}{.5\textwidth}
+            \begin{block}<2>{~}
+                \begin{cppcode}
+                    void bench(future<int>& fut) {
+                        auto start =
+                            chrono::steady_clock::now();
+                        fut.wait();
+                        auto end =
+                            chrono::steady_clock::now();
+                        cout << "get " << fut.get()
+                            << " in " << (end - start)
+                            << endl;
+                    }
+
+                    future<int> f0 = std::async(
+                        std::lauch::deferred,
+                        [&](){return calc0(...);});
+                    bench(f0);
+
+                    future<int> f1 = std::async(
+                        std::lauch::deferred,
+                        [&](){return calc1(...);});
+                    bench(f1);
+                \end{cppcode}
+            \end{block}
+        \end{column}
+    \end{columns}
+\end{frame}
+
+\note[itemize]{
+\item 此处应暂停一下。令听众思考如何在左边代码上减少重复。
+\item Lazy eval要求其值必定在需用的时候才在使用者线程上计算。
+    反正也要在自己线程上计算，为何要如此复杂呢？
+    因为这是一个抽象工具。
+    它隔绝了计算一个值所需用的依赖和使用这个值的场景，
+    即，
+    使用的地方只需要关心值本身，而不需要关心如何计算。
+\item \emph{可以这么用，不等于应该这么用。}
+}
+
+\begin{frame}[fragile]
+    \frametitle{Async eval}
+    \begin{block}{~}
+        \scriptsize
+        \begin{cppcode}
+            void bench(future<int>& fut) {
+                auto start = chrono::steady_clock::now();
+                fut.wait();
+                auto end = chrono::steady_clock::now();
+                cout << "get " << fut.get()
+                    << " in " << (end - start)
+                    << endl;
+            }
+
+            future<int> f0 = std::async(
+                std::lauch::async,
+                [&](){return calc0(...);});
+            bench(f0);
+        \end{cppcode}
+    \end{block}
+\end{frame}
+
+\note[itemize]{
+\item 这个程序和前面的区别只有 \mintinline{cpp}|std::lauch::deferred| 换成了 \mintinline{cpp}|std::launch::async| 。
+    但是结果是不符合 \mintinline{cpp}|bench()| 的预期的。
+    有可能因为抢跑而显得很快。
+    也有可能因为启动并行的overhead导致更慢。
+\item 关于 \mintinline{cpp}|std::launch::async| ，需要多说几句。
+    标准里只说异步，没说如何做到异步。
+    gcc-11 的实现是简单粗暴地直接开一个新物理线程。
+    我们知道乱开物理线程会闯祸。
+    所以，这个特性不用也罢。
+}
+
+\begin{frame}[fragile]
+    \frametitle{std::lauch::async}
+    \begin{alertblock}{2 forbidden rules}
+        \begin{itemize}
+            \item 不可以使用 \mintinline{cpp}|std::lauch::async|
+            \item 不可以使用单参数 \mintinline{cpp}|std::async|
+        \end{itemize}
+    \end{alertblock}
+\end{frame}
+
+\begin{frame}[fragile]
+    \frametitle{Promise}
+    \scriptsize
+    \begin{columns}
+        \begin{column}{.5\textwidth}
+            \begin{exampleblock}{future from a promise}
+                \begin{cppcode}
+                    std::promise<int> p;
+                    std::future<int> f = p.get_future();
+                    std::thread t(
+                        [&p]{ p.set_value(9); });
+                    t.join();
+                \end{cppcode}
+            \end{exampleblock}
+        \end{column}
+        \begin{column}{.5\textwidth}
+            \begin{exampleblock}{future from a packaged task}
+                \begin{cppcode}
+                    std::packaged_task<int()> task(
+                        []{ return 7; });
+                    std::future<int> f = task.get_future();
+                    std::thread t(std::move(task));
+                    t.join();
+                \end{cppcode}
+            \end{exampleblock}
+        \end{column}
+    \end{columns}
+\end{frame}
+
+\note[itemize]{
+\item 使用异步future的正确方式是自行维护其工作线程。
+    Promise更底层。
+    Packaged task提供了task的抽象，略高层些。
+\item Future可以视作一个只能放一个值的队列。
+    \mintinline{cpp}|std::future| 是其读的一侧，
+    那么 \mintinline{cpp}|std::promise| 则是其写的一侧。
+}
+
+\section{Implement a Thread Pool}
+
+\begin{frame}
+    \frametitle{Implement a Thread Pool}
+    \begin{block}{thread pool, tasks and assumptions}
+        \begin{itemize}
+            \item 流控
+                \begin{itemize}
+                    \item<2-> 我们假定用户接受阻塞等待式流控。
+                \end{itemize}
+            \item 任务可否动态拆分
+                \begin{itemize}
+                    \item<3-> 我们假设任务不可动态拆分。
+                \end{itemize}
+            \item 任务的执行：有无优先级、有无执行序的保证
+                \begin{itemize}
+                    \item<4-> 我们假设任务无优先级、各自独立。
+                \end{itemize}
+            \item 优化目标： throughput, latency
+                \begin{itemize}
+                    \item<5-> 我们假定对throughput优化。
+                \end{itemize}
+        \end{itemize}
+    \end{block}
+\end{frame}
+
+\note[itemize]{
+\item 流控是工业化线程池的标配。
+    没有就有爆内存的风险。
+\item 任务的拆分。
+    比如任务是在一个数组上执行mapping。
+    性能最好的粒度一般不是每个数组元素一个任务，当然一般也不是整个数组一个任务。
+    假设测试下来发现单个线程执行100个元素效率最高。
+    那么肯定每100个元素组一个任务。
+    如果现在线程池里有线程闲下来了，而一个忙线程正好刚开始处理一个任务。
+    那么这个忙线程能不能把任务拆50个元素给那个闲线程呢？
+\item 有些线程池严格保证执行序等于提交序。
+    这实际隐式保证了因果关系。
+    但这不是必须的。
+    更好的方式是前一个任务的最后再提交一个任务，以此显式保证因果关系。
+}
+
+\begin{frame}[fragile]
+    \frametitle{Implement a Thread Pool}
+    \scriptsize
+    \begin{exampleblock}{a naive impl.}
+        \begin{cppcode}
+            class ThreadPool {
+                const size_t q_size_limit;
+                std::mutex mtx;
+                std::condition_variable cv;
+                std::deque<std::function<void()>> task_q;
+            }
+        \end{cppcode}
+    \end{exampleblock}
+    \begin{columns}[t]
+        \begin{column}{.5\textwidth}
+            \begin{exampleblock}{ThreadPool::worker()}
+                \tiny
+                \begin{cppcode}
+                    for(;;) {
+                        function<void()> task;
+                        {
+                            lock_guard<mutex> g(mtx);
+                            if (!task_q.empty()) {
+                                swap(task, task_q.front());
+                                task_q.pop_front();
+                            }
+                        }
+                        if (task) {task();}
+                        else {
+                            unique_lock<mutex> g(mtx);
+                            cv.wait(g);
+                        }
+                    }
+                \end{cppcode}
+            \end{exampleblock}
+        \end{column}
+        \begin{column}{.5\textwidth}
+            \begin{exampleblock}{ThreadPool::submit()}
+                \tiny
+                \begin{cppcode}
+                    assert(task);
+                    for(;;) {
+                        lock_guard<mutex> g(mtx);
+                        if (task_q.size() < q_size_limit) {
+                            task_q.push(std::move(task));
+                            break;
+                        }
+                    }
+                    cv.notify_one();
+                \end{cppcode}
+            \end{exampleblock}
+        \end{column}
+    \end{columns}
+\end{frame}
+
+\note[itemize]{
+\item 一个实际的实现还有一些额外的细节需要考虑。
+    这里就不展开了。
+    现代OS对同步原语的优化已经很深入了。
+    多数场景这个naive实现也足够了。
+\item 这里需要提一句：用户传入的任务必须在临界区以外执行。
+    否则，因为用户可能会在任务里提交任务，就死锁了。
+\item 如果我们还要继续优化，我们发现对mtx的争抢是很严重的。
+    核数越多，争抢越严重。
+}
+
+\begin{frame}
+    \frametitle{Implement a Thread Pool}
+    \begin{block}{opt ideas}
+        \begin{itemize}
+            \item 每个worker配一个独立的队列
+            \item<2-> work stealing
+                \begin{itemize}
+                    \item 不要每次只偷一个
+                    \item 不要所有人偷所有人
+                \end{itemize}
+        \end{itemize}
+    \end{block}
+\end{frame}
+
+\note[itemize]{
+\item 对mtx的争抢本质是对队列的争抢。
+    那么很自然的，推到极端，每个worker各自一个队列，就不会有争抢了。
+    然而，如果任务的耗时并不一致，那么就很容易出现“忙的忙死、闲的闲死”。
+    显然，闲的应该去帮忙的干点活。
+\item work stealing在实现上需要注意两个要点。
+    偷意味着争抢。
+    \begin{itemize}
+        \item 每次偷一个。
+            那么做完了就还要偷。
+            这意味更多的争抢。
+        \item 所有人偷所有人意味着只要有人闲下来，所有人都受影响。
+    \end{itemize}
+    实践中常用的做法
+    \begin{itemize}
+        \item 每个worker有自己的私有队列，整体一个全局队列。
+            worker每次找全局队列取一个小批，自己全做完再去取。
+            别人不会来偷自己私有队列的任务。
+            典型是tcmalloc。
+        \item 在上述逻辑的基础上将worker分组，每组一个队列。
+            worker自己的私有队列就不要了。
+        \item 把大家组成一个环：我只偷你的，你只偷他的，我不直接偷他的。
+            那么假设有个人队列是满的，别人都是空的。
+            那么他下游的那个人会分掉他一半的任务，
+            下游的下游又会分掉下游的一半任务，
+            依次类推，
+            最后所有人都有活干，大家差不多忙。
+    \end{itemize}
+}
+
+\begin{frame}[fragile,t]
+    \frametitle{Implement a Thread Pool}
+    \scriptsize
+    \begin{exampleblock}{entangled queue}
+        \tiny
+        \begin{cppcode}
+            class ThreadPool {
+                class Slot {
+                    std::mutex mtx;
+                    std::function<void()> task;
+                };
+                std::vector<Slot> slots;
+            };
+        \end{cppcode}
+    \end{exampleblock}
+    \begin{onlyenv}<1>
+        \begin{exampleblock}{worker}
+            \tiny
+            \begin{cppcode}
+                size_t step = ...; // a random value in [0, slots.size())
+                size_t cur = ...; // a random value in [0, slots.size())
+                for(;;) {
+                    for(size_t wakeup = K; wakeup > 0; --wakeup) {
+                        Slot& cur_slot = slots[cur];
+                        function<void()> task;
+                        {
+                            lock_guard<mutex> g(cur_slot.mtx);
+                            std::swap(task, cur_slot.task);
+                        }
+                        if (task) {
+                            task();
+                            wakeup = K + 1;
+                        }
+                        cur = (cur + step) % slots.size();
+                    }
+                    this_thread::sleep_for(...);
+                }
+            \end{cppcode}
+        \end{exampleblock}
+    \end{onlyenv}
+    \begin{onlyenv}<2>
+        \begin{exampleblock}{submit}
+            \tiny
+            \begin{cppcode}
+                size_t step = ...; // a random value in [0, slots.size())
+                size_t cur = ...; // a random value in [0, slots.size())
+                for(;;) {
+                    for(size_t wakeup = K; wakeup > 0; --wakeup) {
+                        Slot& cur_slot = slots[cur];
+                        {
+                            lock_guard<mutex> g(cur_slot.mtx);
+                            if (!cur_slot.task) {
+                                cur_slot.task = std::move(task);
+                                return;
+                            }
+                        }
+                        cur = (cur + step) % slots.size();
+                    }
+                    this_thread::sleep_for(...);
+                }
+            \end{cppcode}
+        \end{exampleblock}
+    \end{onlyenv}
+\end{frame}
+
+\note[itemize]{
+\item 这个算法我没有在别处看到过。
+    在阿里云某个云产品上用下来，效果很好。
+    基本上那个环节4-5年里都不再是性能的瓶颈。
+\item submit和worker的核心逻辑是一样的，只谈worker就好。
+    每个worker都有自己的起点和步长。
+    从这个起点和步长出发，整个slots可以逻辑上看作一个队列。
+    也就是说，每个worker都（逻辑上）有自己的队列，但是互相纠缠在一起。
+    于是，一个worker在扫自己队列的过程也自然完成了偷其他人的效果。
+    同时，worker在slots上的分布可以近似认为是随机的，那么互相之间的争抢也很少。
+\item 一个关键细节：
+    如何保证每个任务最终都会被执行到？
+    \begin{itemize}
+        \item \mintinline{cpp}|slots.size()| 是一个素数。
+    \end{itemize}
+\item 又一个关键细节：
+    K是什么？
+    \begin{itemize}
+        \item K是一个magic number，一个常数。
+            其语义是，worker每次去检查有没有可以近似认为是对slots的充足率一次随机检测。
+            现在连续K次检测都没找着活，那么我就有几分的信心相信slots的充足率一定低于几个百分点。
+            实践中，比如slots 100个元素，那么低于1\%就可以当成空的。
+    \end{itemize}
+\item 其他还有很多实现上的细节，这里就不展开讲了。
+}
+
+\begin{frame}[plain]
+    \begin{center}
+        \includegraphics{pics/secret_kungfu.jpg}
+    \end{center}
+\end{frame}
+
+\begin{frame}
+    \frametitle{References}
+    \begin{center}
+            \includegraphics[height=.8\textheight]{pics/C++ Concurrency in Action.png}
+    \end{center}
+\end{frame}
+
+\end{document}
