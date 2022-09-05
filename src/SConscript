@@ -6,5 +6,6 @@ pdf = [
     env.beamer('lesson2.tex'),
     env.beamer('lesson3.tex'),
     env.beamer('lesson4.tex'),
+    env.beamer('lesson5.tex'),
 ]
 env.Default(pdf)

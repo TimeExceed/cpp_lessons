@@ -1,0 +1,683 @@
+\documentclass[UTF8,lualatex]{ctexbeamer}
+\usepackage{tabu}
+\usepackage{amsmath}
+\usepackage{graphicx}
+\usepackage{minted}
+
+\usetheme{Frankfurt}
+\setbeamertemplate{note page}[plain]
+% $BEAMER_NOTES
+
+\title{\kaishu Modern C++ and Beyond\\
+    \small
+    第五课\\
+    Why Functional Programming Matters}
+    \author{陶大}
+    \date{2022年9月}
+
+\newminted{cpp}{autogobble}
+
+\renewcommand{\emph}[1]{\textbf{#1}}
+
+\begin{document}
+\songti
+
+\begin{frame}[plain]
+    \titlepage
+\end{frame}
+
+\begin{frame}[plain]
+    \begin{center}
+        \includegraphics[height=.8\textheight]{pics/kungfu_category.jpg}
+    \end{center}
+\end{frame}
+
+\begin{frame}[plain]
+    \tableofcontents
+\end{frame}
+
+\section{A Brief History}
+
+\begin{frame}
+    \frametitle{A Brief History}
+    \begin{center}
+        \includegraphics[width=\textwidth]{pics/function-history.drawio.png}
+    \end{center}
+\end{frame}
+
+\note[itemize]{
+\item 计算范式的历史就是反复重新发明LISP的历史。
+\item 这个时间点有点意思。
+    我们知道，1994年《Design Patterns》这本书出版。
+    仅仅4年后，C++就不仅仅是C with classes了。
+    原因很简单，很多业务场景C++那种面向对象搞不定。
+\item 真实世界很复杂。
+    解决真实问题的软件需要各式各样的建模、抽象工具。
+    不要想着一套技术栈包打天下。
+}
+
+\begin{frame}
+    \Large
+    \begin{quotation}
+        To the man who only has a hammer, everything he encounters begins to look like a nail.
+    \end{quotation}
+    \flushright\normalsize --- {Abraham Maslow}
+\end{frame}
+
+\note[itemize]{
+\item 本节课的目的是丰富听众的工具箱、武器库。
+    而不是说课程里面提到的例子就应该这么做。
+}
+
+\section{Map-Reduce}
+
+\begin{frame}[fragile,t]
+    \frametitle{Reduce over Vectors}
+    \scriptsize
+    \begin{columns}[t]
+        \begin{column}{.5\textwidth}
+            \begin{exampleblock}{~}
+                \begin{cppcode}
+                    int sum(const vector<int>& xs) {
+                        int res = 0;
+                        for(int x: xs) {
+                            res += x;
+                        }
+                        return res;
+                    }
+                    sum(vector<int>{}); // 0
+                    sum(vector<int>{1, 2, 3, 4}); // 10
+                \end{cppcode}
+            \end{exampleblock}
+        \end{column}
+        \begin{column}{.5\textwidth}
+            \begin{exampleblock}{~}
+                \begin{cppcode}
+                    int product(const vector<int>& xs) {
+                        int res = 1;
+                        for(int x: xs) {
+                            res *= x;
+                        }
+                        return res;
+                    }
+                    product(vector<int>{}); // 1
+                    product(vector<int>{2, 3, 5}); // 30
+                \end{cppcode}
+            \end{exampleblock}
+        \end{column}
+    \end{columns}
+    \begin{exampleblock}{~}
+        \begin{cppcode}
+            string concat(const vector<string>& xs) {
+                string res;
+                for(const string& x: xs) {
+                    res.append(x);
+                }
+                return res;
+            }
+            concat(vector<string>{}); // ""
+            concat(vector<string>{"a", "bc"}); // "abc"
+        \end{cppcode}
+    \end{exampleblock}
+\end{frame}
+
+\note[itemize]{
+\item 这三个函数的结构非常相似。
+    实际开发中，这样的代码也很常见：
+    \begin{itemize}
+        \item 在一个数组上过一遍，把整个数组浓缩成一个值。
+    \end{itemize}
+}
+
+\begin{frame}[fragile,t]
+    \frametitle{Reduce over Vectors}
+    \scriptsize
+    \begin{exampleblock}{~}
+        \begin{cppcode}
+            template<class T>
+            T reduce(function<void(T&,const T&)> f, T init, const vector<T>& xs) {
+                T res = std::move(init);
+                for(auto const& x: xs) {
+                    f(res, x);
+                }
+                return res;
+            }
+        \end{cppcode}
+    \end{exampleblock}
+    \begin{columns}
+        \begin{column}{.5\textwidth}
+            \begin{exampleblock}{~}
+                \begin{cppcode}
+                    int64_t sum(const vector<int>& xs) {
+                        return reduce<int>(
+                            [](int& x, const int& y) {
+                                x += y;
+                            },
+                            0,
+                            xs);
+                    }
+                \end{cppcode}
+            \end{exampleblock}
+        \end{column}
+        \begin{column}{.5\textwidth}
+            \begin{exampleblock}{~}
+                \begin{cppcode}
+                    string concat(const vector<string>& xs) {
+                        return reduce<string>(
+                            [](string& x, const string& y) {
+                                x.append(y);
+                            },
+                            string(),
+                            xs);
+                    }
+                \end{cppcode}
+            \end{exampleblock}
+        \end{column}
+    \end{columns}
+\end{frame}
+
+\note[itemize]{
+\item 思路和strategy pattern很像：
+    把迭代（在数组上过一遍）和“浓缩”拆分开。
+    不同的地方是，拆分的手段不是interface，而是高阶函数。
+\item 高阶函数：函数的参数和返回值可以是函数。
+\item 更进一步，如果reduce function和init value构成一个幺半群，那么迭代就可以分块并行化。
+    再进一步，如果其中有零元，那么就可以短路计算。
+\item 如果reduce function满足交换律，那么并行化上可以做premature evaluation。
+    典型比如风控场景。
+    很多时候风控不关心具体的风险值是多少。
+    他关心风险值有没有超过一个阈值。
+    如果稳定超过阈值了，更多的算力投进去就是浪费。
+    这时候就需要premature evaluation。
+    交换率和premature evaluation的关系是，如果有交换率，premature evaluation会更有效。
+    否则，如果前头一点计算卡住了，后头都算完了也拿不出结果来。
+}
+
+\begin{frame}[fragile,t]
+    \frametitle{Reduce over Trees}
+    \scriptsize
+    \begin{columns}
+        \begin{column}{.5\textwidth}
+            \begin{block}{~}
+                \begin{cppcode}
+                    struct Tree {
+                        int mPayload;
+                        vector<Tree> mChildren;
+                    };
+                \end{cppcode}
+            \end{block}
+            \begin{block}{~}
+                \begin{cppcode}
+                template<class T>
+                T reduceTree(
+                    function<void(T&, const T&)> f,
+                    T init, const Tree& t)
+                {
+                    T res = init;
+                    f(res, t.mPayload);
+                    for(const Tree& s: t.mChildren) {
+                        f(res, reduceTree(f, init, s));
+                    }
+                    return res;
+                }
+                \end{cppcode}
+            \end{block}
+        \end{column}
+        \begin{column}{.5\textwidth}
+            \begin{block}{~}
+                \begin{cppcode}
+                    int sumTree(const Tree& t) {
+                        return reduceTree<int>(
+                            [](int& x, const int& y) {
+                                x += y;
+                            },
+                            0,
+                            t);
+                    }
+                \end{cppcode}
+            \end{block}
+            \begin{block}<2>{~}
+                \begin{cppcode}
+                    int64_t sum(const vector<int>& xs) {
+                        return reduce<int>(
+                            [](int& x, const int& y) {
+                                x += y;
+                            },
+                            0,
+                            xs);
+                    }
+                \end{cppcode}
+            \end{block}
+        \end{column}
+    \end{columns}
+\end{frame}
+
+\note[itemize]{
+\item 我们很自然会想，是不是可以把“在数组上迭代”换掉，而“浓缩”的逻辑不变呢？
+    这里就是一个在树上迭代的例子。
+\item sumTree和sum长得很像。有没有办法再精练精练？
+}
+
+\begin{frame}[fragile]
+    \frametitle{Bind}
+    \begin{exampleblock}{~}
+        \scriptsize
+        \begin{cppcode}
+            void add(int& x, const int& y) {
+                x += y;
+            }
+            auto sum = bind(&reduce<int>, add, 0, _1);
+            auto sumTree = bind(&reduceTree<int>, add, 0, _1);
+        \end{cppcode}
+    \end{exampleblock}
+\end{frame}
+
+\note[itemize]{
+\item 通俗地讲，bind是把函数的某几个参数固定下来。
+    用数学的语言讲，是把高维函数投影到低维上，降维。
+\item 为什么要降维呢？
+    \begin{itemize}
+        \item 方便。前面例子里，把reduce绑定加法就成了连加，绑定了乘法就成了连乘。
+        \item 正确性。有些情况下，更通用（高维）的函数具备更丰富的性质，更容易测试。
+            比如实现一个百分数的运算库不如实现一个在有理数的库上加一个转百分数的接口。
+            百分数由于分母固定，所以分子只能用浮点数。
+            那么由于浮点误差，$a*b/b=a$这个性质不一定存在。
+    \end{itemize}
+}
+
+\section{Iteration}
+
+\begin{frame}[fragile,t]
+    \frametitle{Iteration}
+    \scriptsize
+    \begin{columns}[t]
+        \begin{column}{.5\textwidth}
+            \begin{exampleblock}{Newton-Raphson}
+                \[
+                    a_{n+1} = (a_n + \frac{x}{a_n})/2
+                \]
+                \begin{cppcode}
+                    double sqrt(double x, double eps) {
+                      double cur = 1.0;
+                      for(;;) {
+                        double nxt = (cur + x / cur) / 2;
+                        if (fabs(nxt - cur) < eps) break;
+                        cur = nxt;
+                      }
+                      return cur;
+                    }
+                \end{cppcode}
+            \end{exampleblock}
+        \end{column}
+        \begin{column}{.5\textwidth}
+            \begin{block}{derivative}
+                \[
+                    f'(x) = \lim_{h\to 0}\frac{f(x+h) - f(x)}{h}
+                \]
+                \begin{cppcode}
+                double derivate(
+                    function<double(double)> f,
+                    double x0,
+                    double eps)
+                {
+                  double h = 1.0;
+                  double cur = (f(x0+h) - f(x0)) / h;
+                  for(;;) {
+                    h /= 2;
+                    double nxt = (f(x0+h) - f(x0)) / h;
+                    if (fabs(nxt - cur) < eps) break;
+                    cur = nxt;
+                  }
+                  return cur;
+                }
+                \end{cppcode}
+            \end{block}
+        \end{column}
+    \end{columns}
+\end{frame}
+
+\note[itemize]{
+\item 明显这两个函数长得很像。
+    有没有办法把重复的逻辑抽出来呢？
+\item 第一个方案。
+    我们注意到，牛-拉公式和求导都有状态。
+    在牛-拉公式就是$a_n$，在求导就是$h$。
+    每一次迭代都是状态的转移，可以用一个状态转移函数来刻画。
+    牛-拉公式里，状态就是最终返回的东西；
+    而在求导里，状态不是给用户看的，需要再变一变，于是有将状态映射到导数值的表观函数。
+}
+
+\begin{frame}[fragile,t]
+    \frametitle{方案一：高阶函数}
+    \vspace{-0.5cm}
+    \scriptsize
+    \begin{block}{~}
+        \begin{cppcode}
+        double within1(double eps, function<double (double)> appearance,
+          function<double (double)> transition) {
+          double curState = 1.0, curValue = appearance(curState);
+          for(;;) {
+            double nxtState = transition(curState);
+            double nxtValue = appearance(nxtState);
+            if (fabs(nxtValue - curValue) < eps) break;
+            curState = nxtState;
+            curValue = nxtValue;
+          }
+          return curValue;
+        }
+        \end{cppcode}
+    \end{block}
+    \begin{onlyenv}<1>
+        \begin{block}{Newton-Raphson}
+            \begin{cppcode}
+                double nextNewtonRaphson(double x, double an) {
+                  return (an + x/an) / 2;
+                };
+                double sqrt1(double x, double eps) {
+                  return within1(eps,
+                    std::identity,
+                    [=](double an) {return nextNewtonRaphson(x, an);});
+                };
+            \end{cppcode}
+        \end{block}
+    \end{onlyenv}
+    \begin{onlyenv}<2>
+        \begin{block}{derivative}
+            \begin{cppcode}
+                double slope(function<double(double)> f, double x, double h) {
+                  return (f(x + h) - f(x)) / h;
+                };
+                double derivate1(function<double(double)> f, double x, double eps) {
+                  return within1(eps,
+                    [=](double h) {return slope(f, x, h);},
+                    [](double h) { return h/2;});
+                };
+            \end{cppcode}
+        \end{block}
+    \end{onlyenv}
+\end{frame}
+
+\note[itemize]{
+\item sqrt1里面，
+    \begin{itemize}
+        \item \mintinline{cpp}!std::identity! 是C++20才引入的。
+            实现很简单，输入啥就返回啥。
+            为什么标准库里会有这个？
+            因为identity function在FP里很重要。
+            FP装X老梗“自函子范畴上的幺半群”里的那个“幺”，指的就是它。
+            因为牛-拉公式里状态即最终看到的值，所以表观函数就是identity。
+        \item lambda expression在C++11之后开始流行开来。
+            圆括号里是参数列表，花括号里是函数体，这些和普通函数一样。
+            方括号里是captures，是说lambda里如果用到环境中的变量（比如sqrt1里的x），该变量的值如何进入lambda编译之后的（匿名）结构。
+            常见的有三种，值拷贝、引用、move。
+            这里的“=”意思是默认拷贝。
+    \end{itemize}
+\item derivate1没啥好细讲的。
+}
+
+\begin{frame}
+    \frametitle{方案一：高阶函数}
+    \begin{block}{评析}
+        within1: strategy pattern
+        \begin{itemize}
+            \item 内部状态不必是double
+                \begin{itemize}
+                    \item memento pattern，或者模板
+                \end{itemize}
+            \item 如果转移和表观紧耦合，
+                \begin{itemize}
+                    \item abstract factory pattern
+                \end{itemize}
+            \item 如果转移和表观松耦合
+                \begin{itemize}
+                    \item prototype pattern
+                \end{itemize}
+        \end{itemize}
+    \end{block}
+\end{frame}
+
+\note[itemize]{
+\item 从OO的角度看，方案一的within1函数其实就是一个strategy pattern，配合转移和表观两个strategy。
+\item 那么，问题在哪里？
+    问题在概念多，不直观。
+    比如对牛-拉公式的实现者来讲，表观函数是个什么鬼？
+}
+
+\begin{frame}[fragile,t]
+    \frametitle{方案二：流计算}
+    \begin{block}{Newton-Raphson}
+        \begin{itemize}
+            \item 将牛-拉迭代视作一个\emph{无限长的流}，再截断不需要的尾巴。
+        \end{itemize}
+    \end{block}
+    \vspace{-0.5cm}
+    \scriptsize
+    \begin{columns}[t]
+        \begin{column}{.42\textwidth}
+            \begin{exampleblock}{~}
+                \begin{cppcode}
+                    function<double()> iterate(
+                      function<double(double)> f,
+                      double init) {
+                        double an = init;
+                        return [=]() mutable {
+                            double x = an;
+                            an = f(an);
+                            return x;
+                        };
+                    }
+                \end{cppcode}
+            \end{exampleblock}
+        \end{column}
+        \begin{column}{.58\textwidth}
+            \begin{exampleblock}{~}
+                \begin{cppcode}
+                    double within2(
+                      function<double()> seq, double eps) {
+                        double last = seq();
+                        for(;;) {
+                            double cur = seq();
+                            if (fabs(cur - last) < eps) break;
+                            last = cur;
+                        }
+                        return last;
+                    }
+                \end{cppcode}
+            \end{exampleblock}
+        \end{column}
+    \end{columns}
+    \begin{exampleblock}{~}
+        \begin{cppcode}
+            double sqrt2(double x, double eps) {
+              auto next = [=](double an) {return nextNewtonRaphson(x, an);};
+              auto seq = iterate(next, 1.0);
+              return within2(seq, eps);
+            }
+        \end{cppcode}
+    \end{exampleblock}
+\end{frame}
+
+\note[itemize]{
+\item \mintinline{cpp}!iterate!
+    \begin{itemize}
+        \item 从概念上是一个无限长的序列（流），其首元素是用户给的init。
+            然后第二个元素是f(init)，第三个元素是f作用两次，……
+        \item 实际的计算机里当然没法直接存储无限长的序列。
+            所以这里就表示成一个无参数但有返回值的函数。
+            每调用一次吐出一个元素。
+            这被称作lazy sequence。
+        \item 这里lambda expression后面的mutable，代表它的函数体可以改变其捕获的值。
+            在这里就是an。
+    \end{itemize}
+\item \mintinline{cpp}|within2|
+    接受一根流，然后当相邻两元素的差值足够小，就停止（截断）。
+    换句话说，within2从数学角度看，把流映射到值。
+\item 迭代器seq无参数但有返回值，所以有内部可变状态。
+    但从无限长序列的角度看，整根流又是不可变的。
+}
+
+\begin{frame}[fragile,t]
+    \frametitle{方案二：流计算}
+    \footnotesize
+    \begin{block}{derivation}
+        \[
+            f'(x) = \lim_{h\to 0}\frac{f(x+h) - f(x)}{h}
+        \]
+        \begin{enumerate}
+            \item 将极限逼近的过程视作一个\emph{无限长的流}
+            \item 将h逐次减半的流变换到斜率值的流
+            \item 然后截断
+        \end{enumerate}
+    \end{block}
+    \vspace{-0.5cm}
+    \scriptsize
+    \begin{columns}[t]
+        \begin{column}{.45\textwidth}
+            \begin{exampleblock}{~}
+                \begin{cppcode}
+                    function<double()> map(
+                      function<double()> seq,
+                      function<double(double)> f) {
+                        return [=]() {
+                            double x = seq();
+                            return f(x);
+                        };
+                    }
+                \end{cppcode}
+            \end{exampleblock}
+        \end{column}
+        \begin{column}{.55\textwidth}
+            \begin{exampleblock}{~}
+                \begin{cppcode}
+                    double derivate2(
+                      function<double(double)> f,
+                      double x0, double eps) {
+                        auto next = [](double h)(return h/2);
+                        auto seq = iterate(next, 1.0);
+                        auto g = [=](double h) {
+                            return slope(f, x0, h);
+                        };
+                        auto seq2 = map(seq, g);
+                        return within2(seq2, eps);
+                    }
+                \end{cppcode}
+            \end{exampleblock}
+        \end{column}
+    \end{columns}
+\end{frame}
+
+\begin{frame}
+    \frametitle{方案二：流计算}
+    \begin{block}{~}
+        \begin{itemize}
+            \item 比方案一更为直观
+            \item 代码实现更简洁，更贴近业务
+        \end{itemize}
+    \end{block}
+\end{frame}
+
+\note[itemize]{
+\item 如果我们将截断函数within2也看作返回只有一个元素的流。
+    那么整个计算过程就可以看成将一根流变换到另一根流的过程。
+\item “流本身不可变，流上的计算是流的变换”这个思路产生了Java8 stream API。
+    也是分布式流计算框架storm和flink的根基。
+}
+
+\section{Iteration, Iterator and the Ranges Library}
+
+\begin{frame}
+    \frametitle{Iteration/Streaming}
+    \begin{block}{Stateful functions as streams}
+        是架构上最佳的做法吗？
+        \begin{itemize}
+            \item random库大量使用这种方式
+        \end{itemize}
+    \end{block}
+\end{frame}
+
+\note[itemize]{
+\item 我早年讲这个内容的时候就说，随机数生成器显然是无限流。
+    没想到C++真就这么搞。
+\item 然而我认为：这么搞可以，但不好。
+    函数是太通用的设施，直接用来做iteration/streaming的UI，那就犯了抽象层次错配的架构错误。
+}
+
+\begin{frame}[fragile]
+    \frametitle{Iterator}
+    \begin{block}{Iterators as streams}
+        是架构上最佳的做法吗？
+        \begin{itemize}
+            \item C++ iterator vs.\ pointer to array elements (in C)
+        \end{itemize}
+    \end{block}
+    \scriptsize
+    \begin{cppcode}
+        std::vector<int> xs = {...};
+        auto iter = std::find(xs.begin(), xs.end(), 42);
+
+        if(iter == xs.end()) {
+            // existence testing
+        }
+
+        // offset calculating
+        auto idx = (iter - xs.begin());
+    \end{cppcode}
+\end{frame}
+
+\note[itemize]{
+\item C++ iterator占了个好名字，但设计得很差。
+    所以其他语言基本都不跟。
+    最大的错误在于，完成一次iteration需要两个iterator对象。
+    这样就很难在iterator上定义运算了。
+}
+
+\begin{frame}
+    \frametitle{Ranges}
+    \begin{block}{What's the best answer?}
+        the Ranges Library (C++ 20)
+    \end{block}
+\end{frame}
+
+\note[itemize]{
+\item 比较搞笑的是，range是iterator，而iterator是range。
+}
+
+\begin{frame}
+    \frametitle{小结}
+    \begin{block}{~}
+        \begin{itemize}
+            \item higher-order functions
+                \begin{itemize}
+                    \item 函数可以作为参数。函数可以作为返回值。
+                \end{itemize}
+            \item streaming \& lazy sequences
+                \begin{itemize}
+                    \item 逻辑上的(无限长)不可变序列。
+                    \item 实现中可以是一个有状态无参数的函数。
+                    \item 更好的实现是一个range。
+                \end{itemize}
+            \item 新的“胶水”
+                \begin{itemize}
+                    \item FP提供了新的建模思路，新的胶合代码组件的方法，新的处理可变性的手段。
+                    \item “胶水”不同，分解问题的方式也不同。
+                \end{itemize}
+        \end{itemize}
+    \end{block}
+\end{frame}
+
+\begin{frame}[plain]
+    \begin{center}
+        \includegraphics{pics/secret_kungfu.jpg}
+    \end{center}
+\end{frame}
+
+\begin{frame}
+    \frametitle{References}
+    \begin{itemize}
+        \item Why Functional Programming Matters by J.\ Hughes
+    \end{itemize}
+\end{frame}
+
+\end{document}
+
+
